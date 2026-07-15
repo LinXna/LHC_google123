@@ -1,0 +1,315 @@
+import express from "express";
+import path from "path";
+import * as fs from "fs";
+import { createServer as createViteServer } from "vite";
+import { ZodiacPatternAnalyzer } from "./src/server/zodiacAnalyzer.js";
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(express.json());
+
+  const DATA_DIR = path.join(process.cwd(), "data");
+
+  // Helper to get available JSON files
+  function getAvailableDataFiles(): string[] {
+    if (!fs.existsSync(DATA_DIR)) return [];
+    return fs.readdirSync(DATA_DIR)
+      .filter(f => f.endsWith(".json"))
+      .sort();
+  }
+
+  // 1. API: Get list of available years
+  app.get("/api/years", (req, res) => {
+    try {
+      const files = getAvailableDataFiles();
+      const years = files.map(f => {
+        const yearStr = f.split(".")[0];
+        return {
+          filename: f,
+          year: parseInt(yearStr) || 2026
+        };
+      });
+      res.json({ status: "success", years });
+    } catch (e: any) {
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  // 2. API: Execute full pattern analysis
+  app.post("/api/analyze", (req, res) => {
+    try {
+      const { selectedYears, baseZodiac, engineMode = "unified" } = req.body; // array of filenames or null for all
+      const files = getAvailableDataFiles();
+      const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
+        ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
+        : files.map(f => path.join(DATA_DIR, f));
+
+      const mergedRecords: any[] = [];
+
+      for (const filePath of targetFiles) {
+        const fileName = path.basename(filePath);
+        try {
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const payload = JSON.parse(raw);
+          const bodyList = payload.result?.data?.bodyList;
+          if (!Array.isArray(bodyList)) continue;
+
+          let fileYear = parseInt(fileName.split(".")[0]) || 2026;
+          if (bodyList.length > 0 && bodyList[0].preDrawDate) {
+            fileYear = parseInt(bodyList[0].preDrawDate.slice(0, 4)) || fileYear;
+          }
+
+          const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
+          const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+
+          for (const r of yearRecords) {
+            r.archive_year = fileYear;
+            mergedRecords.push(r);
+          }
+        } catch (err) {
+          console.error(`Error loading year file ${fileName}:`, err);
+        }
+      }
+
+      mergedRecords.sort((a, b) => {
+        const yrA = a.archive_year || 0;
+        const yrB = b.archive_year || 0;
+        if (yrA !== yrB) return yrA - yrB;
+        return a.issue - b.issue;
+      });
+
+      if (mergedRecords.length === 0) {
+        return res.status(400).json({ status: "error", message: "未成功加载任何年份的历史数据" });
+      }
+
+      // Latest year's zodiac determines the unify engine logic
+      const latestRecord = mergedRecords[mergedRecords.length - 1];
+      const latestYear = latestRecord.archive_year || 2026;
+      const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
+
+      const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode);
+      const report = analyzer.computePatterns(mergedRecords);
+
+      res.json({
+        status: "success",
+        baseZodiac: finalBaseZodiac,
+        latestYear,
+        totalRecords: mergedRecords.length,
+        report
+      });
+    } catch (e: any) {
+      console.error("Analysis failed:", e);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  // 3. API: Generate smart predictions
+  app.post("/api/predict", (req, res) => {
+    try {
+      const { selectedYears, baseZodiac, engineMode = "unified", customWeights } = req.body;
+      const files = getAvailableDataFiles();
+      const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
+        ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
+        : files.map(f => path.join(DATA_DIR, f));
+
+      const mergedRecords: any[] = [];
+      for (const filePath of targetFiles) {
+        try {
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const payload = JSON.parse(raw);
+          const bodyList = payload.result?.data?.bodyList;
+          if (!Array.isArray(bodyList)) continue;
+
+          let fileYear = parseInt(path.basename(filePath).split(".")[0]) || 2026;
+          if (bodyList.length > 0 && bodyList[0].preDrawDate) {
+            fileYear = parseInt(bodyList[0].preDrawDate.slice(0, 4)) || fileYear;
+          }
+
+          const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
+          const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+
+          for (const r of yearRecords) {
+            r.archive_year = fileYear;
+            mergedRecords.push(r);
+          }
+        } catch (err) {}
+      }
+
+      mergedRecords.sort((a, b) => {
+        const yrA = a.archive_year || 0;
+        const yrB = b.archive_year || 0;
+        if (yrA !== yrB) return yrA - yrB;
+        return a.issue - b.issue;
+      });
+
+      if (mergedRecords.length === 0) {
+        return res.status(400).json({ status: "error", message: "数据为空，无法执行推演" });
+      }
+
+      const latestRecord = mergedRecords[mergedRecords.length - 1];
+      const latestYear = latestRecord.archive_year || 2026;
+      const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
+
+      const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode);
+      const report = analyzer.computePatterns(mergedRecords);
+
+      const prediction = ZodiacPatternAnalyzer.generatePrediction(mergedRecords, report, finalBaseZodiac, engineMode, customWeights);
+
+      res.json({
+        status: "success",
+        prediction
+      });
+    } catch (e: any) {
+      console.error("Prediction failed:", e);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  // 4. API: Run Simulation/Backtest
+  app.post("/api/simulate", (req, res) => {
+    try {
+      const { selectedYears, testIssue, baseZodiac, engineMode = "unified", customWeights } = req.body;
+      const files = getAvailableDataFiles();
+      const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
+        ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
+        : files.map(f => path.join(DATA_DIR, f));
+
+      const mergedRecords: any[] = [];
+      for (const filePath of targetFiles) {
+        try {
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const payload = JSON.parse(raw);
+          const bodyList = payload.result?.data?.bodyList;
+          if (!Array.isArray(bodyList)) continue;
+
+          let fileYear = parseInt(path.basename(filePath).split(".")[0]) || 2026;
+          if (bodyList.length > 0 && bodyList[0].preDrawDate) {
+            fileYear = parseInt(bodyList[0].preDrawDate.slice(0, 4)) || fileYear;
+          }
+
+          const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
+          const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+
+          for (const r of yearRecords) {
+            r.archive_year = fileYear;
+            mergedRecords.push(r);
+          }
+        } catch (err) {}
+      }
+
+      mergedRecords.sort((a, b) => {
+        const yrA = a.archive_year || 0;
+        const yrB = b.archive_year || 0;
+        if (yrA !== yrB) return yrA - yrB;
+        return a.issue - b.issue;
+      });
+
+      let testIdx = mergedRecords.findIndex(r => r.issue === testIssue);
+      if (testIdx === -1 && testIssue > 100000) {
+        const yearStr = testIssue.toString().slice(0, 4);
+        const issueStr = testIssue.toString().slice(4);
+        const targetYear = parseInt(yearStr);
+        const targetIssue = parseInt(issueStr);
+        testIdx = mergedRecords.findIndex(r => r.issue === targetIssue && r.archive_year === targetYear);
+      }
+      if (testIdx === -1) {
+        return res.status(404).json({ status: "error", message: `未找到期号 ${testIssue}` });
+      }
+
+      if (testIdx < ZodiacPatternAnalyzer.MIN_PERIODS) {
+        return res.status(400).json({ status: "error", message: "该期前面的历史期数不足，无法运行推演" });
+      }
+
+      // History data slice up to the selected issue (inclusive)
+      const historicalSlice = mergedRecords.slice(0, testIdx + 1);
+      const nextActualRecord = testIdx + 1 < mergedRecords.length ? mergedRecords[testIdx + 1] : null;
+
+      const latestRecord = historicalSlice[historicalSlice.length - 1];
+      const latestYear = latestRecord.archive_year || 2026;
+      const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
+
+      const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode);
+      const report = analyzer.computePatterns(historicalSlice);
+      const prediction = ZodiacPatternAnalyzer.generatePrediction(historicalSlice, report, finalBaseZodiac, engineMode, customWeights);
+
+      // Check hits
+      let matchedResults: any = null;
+      if (nextActualRecord) {
+        const actualNums = nextActualRecord.numbers;
+        
+        let activeMap = analyzer.zodiacMap;
+        if (engineMode === "dynamic" && nextActualRecord.archive_year !== undefined) {
+          const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(nextActualRecord.archive_year);
+          activeMap = analyzer._getZodiacMap(nextBase);
+        }
+        const actualZodiacs = actualNums.map(n => activeMap[n]);
+        const actualZSet = new Set(actualZodiacs);
+
+        const hotHits = tierMatchHits(prediction.tierHot, actualZodiacs);
+        const midHits = tierMatchHits(prediction.tierMid, actualZodiacs);
+        const killHits = tierMatchHits(prediction.tierKill, actualZodiacs);
+
+        const numHits = actualNums.filter(n => prediction.premiumHotNums.includes(n));
+
+        matchedResults = {
+          issue: nextActualRecord.issue,
+          date: nextActualRecord.date,
+          actualNums,
+          actualZodiacs,
+          hotHits,
+          midHits,
+          killHits,
+          numHits
+        };
+      }
+
+      res.json({
+        status: "success",
+        prediction,
+        simulationResult: matchedResults
+      });
+    } catch (e: any) {
+      console.error("Simulation failed:", e);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
+  function tierMatchHits(tier: string[], actualZodiacs: string[]): { zodiac: string, matches: number }[] {
+    const hits: { zodiac: string, matches: number }[] = [];
+    const counts: Record<string, number> = {};
+    for (const z of actualZodiacs) counts[z] = (counts[z] || 0) + 1;
+
+    for (const z of tier) {
+      if (counts[z] > 0) {
+        hits.push({ zodiac: z, matches: counts[z] });
+      }
+    }
+    return hits;
+  }
+
+  // Vite development vs production asset serving
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

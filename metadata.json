@@ -1,0 +1,6 @@
+{
+  "name": "LHC Zodiac Analyzer",
+  "description": "LHC 生肖量化特征与多组合精准推演系统",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
