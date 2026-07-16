@@ -192,10 +192,12 @@ export class ZodiacPatternAnalyzer {
     relationSource: Record<string, string[]>,
     size: number = 2,
     hotThreshold: number = ZodiacPatternAnalyzer.HOT_THRESHOLD,
-    coldZero: boolean = false
+    coldZero: boolean = false,
+    allowedKeys?: Set<string>
   ): Record<string, Rule1PairItem> {
     const result: Record<string, Rule1PairItem> = {};
     for (const [key, nextList] of Object.entries(relationSource)) {
+      if (allowedKeys && !allowedKeys.has(key)) continue;
       const counts: Record<string, number> = {};
       for (const z of nextList) counts[z] = (counts[z] || 0) + 1;
       const total = nextList.length;
@@ -230,7 +232,7 @@ export class ZodiacPatternAnalyzer {
     return result;
   }
 
-  public computePatterns(sortedRecords: LotteryRecord[]): AnalyzerReport {
+  public computePatterns(sortedRecords: LotteryRecord[], isBacktest: boolean = false): AnalyzerReport {
     if (!sortedRecords) throw new Error("sortedRecords 不能为 null");
     if (!Array.isArray(sortedRecords)) throw new Error("sortedRecords 必须是 array");
 
@@ -363,6 +365,17 @@ export class ZodiacPatternAnalyzer {
 
     const totalValidP = Math.max(totalPeriods - 1, 1);
 
+    const latestZList = zodiacMatrix[zodiacMatrix.length - 1] || [];
+    const latestZSet = new Set(latestZList);
+    const latestDiv = latestZSet.size;
+
+    const latestZListSorted = Array.from(latestZSet).sort();
+    const latestPairs = ZodiacPatternAnalyzer.getCombinations(latestZListSorted, 2);
+    const activePairKeys = new Set(latestPairs.map(pair => `(${latestDiv}, ('${pair[0]}', '${pair[1]}'))`));
+
+    const latestTriplets = ZodiacPatternAnalyzer.getCombinations(latestZListSorted, 3);
+    const activeTripletKeys = new Set(latestTriplets.map(triplet => `(${latestDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`));
+
     // =========================================================================
     // 查找器7：前三期轨迹回补规则
     // =========================================================================
@@ -453,31 +466,37 @@ export class ZodiacPatternAnalyzer {
         repeatStatsByDiv[currDiv].repeat_counts[intersectCnt] = (repeatStatsByDiv[currDiv].repeat_counts[intersectCnt] || 0) + 1;
       }
 
+      if (isBacktest && currDiv !== latestDiv) {
+        continue;
+      }
+
       for (const z of currZSet) {
         const condKey = `当期多样性[${currDiv}种生肖]且含【${z}】`;
-        if (!rule1Detail[condKey]) rule1Detail[condKey] = [];
-        rule1Detail[condKey].push(...nextZList);
+        if (!isBacktest || (currDiv === latestDiv && latestZSet.has(z))) {
+          if (!rule1Detail[condKey]) rule1Detail[condKey] = [];
+          rule1Detail[condKey].push(...nextZList);
+        }
       }
 
       const currZList = Array.from(currZSet).sort();
       const pairs = ZodiacPatternAnalyzer.getCombinations(currZList, 2);
       for (const pair of pairs) {
         const condKey = `(${currDiv}, ('${pair[0]}', '${pair[1]}'))`;
-        if (!rule1PairDetail[condKey]) rule1PairDetail[condKey] = [];
-        rule1PairDetail[condKey].push(...nextZList);
+        if (!isBacktest || activePairKeys.has(condKey)) {
+          if (!rule1PairDetail[condKey]) rule1PairDetail[condKey] = [];
+          rule1PairDetail[condKey].push(...nextZList);
+        }
       }
 
       const triplets = ZodiacPatternAnalyzer.getCombinations(currZList, 3);
       for (const triplet of triplets) {
         const condKey = `(${currDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`;
-        if (!rule1TripletDetail[condKey]) rule1TripletDetail[condKey] = [];
-        rule1TripletDetail[condKey].push(...nextZList);
+        if (!isBacktest || activeTripletKeys.has(condKey)) {
+          if (!rule1TripletDetail[condKey]) rule1TripletDetail[condKey] = [];
+          rule1TripletDetail[condKey].push(...nextZList);
+        }
       }
     }
-
-    const latestZList = zodiacMatrix[zodiacMatrix.length - 1] || [];
-    const latestZSet = new Set(latestZList);
-    const latestDiv = latestZSet.size;
 
     const rule1Report: Record<string, Rule1ReportItem> = {};
     for (const [condition, nxtList] of Object.entries(rule1Detail)) {
@@ -549,23 +568,22 @@ export class ZodiacPatternAnalyzer {
       rule1PairDetail,
       2,
       0.12,
-      true
+      true,
+      activePairKeys
     );
 
     const rule1TripletReport = this.buildZodiacRelationRule(
       rule1TripletDetail,
       3,
       0.12,
-      true
+      true,
+      activeTripletKeys
     );
 
     // =========================================================================
     // F1 升级：高阶组合（双元与三元）状态共振评分
     // =========================================================================
-    const latestZListSorted = Array.from(latestZSet).sort();
-    
     // 双元组合共振 scoring (仅保留关联置信度最高的 top 2 组合，防止评分过度通胀)
-    const latestPairs = ZodiacPatternAnalyzer.getCombinations(latestZListSorted, 2);
     const matchedPairsList: { pair: string[]; pData: any; scoreMetric: number }[] = [];
     for (const pair of latestPairs) {
       const condKey = `(${latestDiv}, ('${pair[0]}', '${pair[1]}'))`;
@@ -596,8 +614,7 @@ export class ZodiacPatternAnalyzer {
       }
     }
 
-    // 三元组合共振 scoring (仅保留最核心的 top 1 黄金共振，控制积分冗余)
-    const latestTriplets = ZodiacPatternAnalyzer.getCombinations(latestZListSorted, 3);
+    // 三元组合共振 scoring (仅保留最核心 of top 1 黄金共振，控制积分冗余)
     const matchedTripletsList: { triplet: string[]; tData: any; scoreMetric: number }[] = [];
     for (const triplet of latestTriplets) {
       const condKey = `(${latestDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`;

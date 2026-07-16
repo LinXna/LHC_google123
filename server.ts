@@ -40,7 +40,7 @@ async function startServer() {
   // 2. API: Execute full pattern analysis
   app.post("/api/analyze", (req, res) => {
     try {
-      const { selectedYears, baseZodiac, engineMode = "unified" } = req.body; // array of filenames or null for all
+      const { selectedYears, baseZodiac, engineMode = "dynamic" } = req.body; // array of filenames or null for all
       const files = getAvailableDataFiles();
       const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
         ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
@@ -109,7 +109,7 @@ async function startServer() {
   // 3. API: Generate smart predictions
   app.post("/api/predict", (req, res) => {
     try {
-      const { selectedYears, baseZodiac, engineMode = "unified", customWeights } = req.body;
+      const { selectedYears, baseZodiac, engineMode = "dynamic", customWeights } = req.body;
       const files = getAvailableDataFiles();
       const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
         ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
@@ -172,7 +172,7 @@ async function startServer() {
   // 4. API: Run Simulation/Backtest
   app.post("/api/simulate", (req, res) => {
     try {
-      const { selectedYears, testIssue, baseZodiac, engineMode = "unified", customWeights } = req.body;
+      const { selectedYears, testIssue, baseZodiac, engineMode = "dynamic", customWeights } = req.body;
       const files = getAvailableDataFiles();
       const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
         ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
@@ -282,9 +282,23 @@ async function startServer() {
   // 5. API: Run Batch Backtest for a specific year (e.g. 2026)
   app.post("/api/backtest-year", (req, res) => {
     try {
-      const { year = 2026, baseZodiac, engineMode = "dynamic", customWeights } = req.body;
+      const { year = 2026, baseZodiac, engineMode = "dynamic", customWeights, quarter, selectedYears } = req.body;
       const files = getAvailableDataFiles();
-      const targetFiles = files.map(f => path.join(DATA_DIR, f));
+      
+      const targetYear = parseInt(year) || 2026;
+      let targetFiles: string[] = [];
+
+      if (Array.isArray(selectedYears) && selectedYears.length > 0) {
+        targetFiles = selectedYears
+          .filter(f => files.includes(f))
+          .map(f => path.join(DATA_DIR, f));
+      } else {
+        const yearsToLoad = [targetYear - 3, targetYear - 2, targetYear - 1, targetYear];
+        targetFiles = yearsToLoad
+          .map(y => `${y}.json`)
+          .filter(f => files.includes(f))
+          .map(f => path.join(DATA_DIR, f));
+      }
 
       const mergedRecords: any[] = [];
       for (const filePath of targetFiles) {
@@ -301,13 +315,15 @@ async function startServer() {
 
           const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
           const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
-          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath, DATA_DIR);
 
           for (const r of yearRecords) {
             r.archive_year = fileYear;
             mergedRecords.push(r);
           }
-        } catch (err) {}
+        } catch (err) {
+          console.error(`Error reading ${filePath}:`, err);
+        }
       }
 
       mergedRecords.sort((a, b) => {
@@ -318,10 +334,31 @@ async function startServer() {
       });
 
       // Filter target records of the specified year
-      const yearRecords = mergedRecords.filter(r => r.archive_year === year);
+      let yearRecords = mergedRecords.filter(r => r.archive_year === targetYear);
+      
+      // Support quarterly filtering
+      if (quarter && quarter !== "all") {
+        const q = parseInt(quarter);
+        yearRecords = yearRecords.filter(r => {
+          const dateStr = r.date || "";
+          const parts = dateStr.split("-");
+          if (parts.length >= 2) {
+            const m = parseInt(parts[1], 10);
+            if (q === 1) return m >= 1 && m <= 3;
+            if (q === 2) return m >= 4 && m <= 6;
+            if (q === 3) return m >= 7 && m <= 9;
+            if (q === 4) return m >= 10 && m <= 12;
+          }
+          return false;
+        });
+      }
       
       if (yearRecords.length === 0) {
-        return res.status(400).json({ status: "error", message: `未找到 ${year} 年的历史数据` });
+        const qText = quarter && quarter !== "all" ? `第 ${quarter} 季度` : "";
+        return res.status(404).json({ 
+          status: "error", 
+          message: `未找到 ${targetYear} 年 ${qText} 的历史开奖数据，请确认数据源已就绪。` 
+        });
       }
 
       // Sort yearRecords ascending by issue
@@ -350,7 +387,7 @@ async function startServer() {
         const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
 
         const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode);
-        const report = analyzer.computePatterns(historicalSlice);
+        const report = analyzer.computePatterns(historicalSlice, true);
         const prediction = ZodiacPatternAnalyzer.generatePrediction(historicalSlice, report, finalBaseZodiac, engineMode, customWeights);
 
         // Check actual draw details of the predicted issue
@@ -412,22 +449,38 @@ async function startServer() {
         });
       }
 
+      const totalHotRecommended = results.reduce((sum, r) => sum + (r.prediction.tierHot?.length || 0), 0);
+      const totalHotHitZodiacs = results.reduce((sum, r) => sum + (r.metrics.hotHits?.length || 0), 0);
+      const totalMidRecommended = results.reduce((sum, r) => sum + (r.prediction.tierMid?.length || 0), 0);
+      const totalMidHitZodiacs = results.reduce((sum, r) => sum + (r.metrics.midHits?.length || 0), 0);
+      const totalKillRecommended = results.reduce((sum, r) => sum + (r.prediction.tierKill?.length || 0), 0);
+      const totalKillLeakZodiacs = results.reduce((sum, r) => sum + (r.metrics.killHits?.length || 0), 0);
+
+      const hotHitRate = totalHotRecommended > 0 ? totalHotHitZodiacs / totalHotRecommended : 0;
+      const midHitRate = totalMidRecommended > 0 ? totalMidHitZodiacs / totalMidRecommended : 0;
+      const killInterceptRate = totalKillRecommended > 0 ? (totalKillRecommended - totalKillLeakZodiacs) / totalKillRecommended : 0;
+      
+      // Calculate composite weighted accuracy: Hot (50%), Mid (30%), Kill Intercept (20%)
+      const weightedHitRate = (hotHitRate * 0.5) + (midHitRate * 0.3) + (killInterceptRate * 0.2);
+
       res.json({
         status: "success",
         year,
         engineMode,
         totalIssuesEvaluated,
         summary: {
-          hotHitRate: totalIssuesEvaluated > 0 ? totalHotHits / totalIssuesEvaluated : 0,
-          hotHitCount: totalHotHits,
-          hotMatchesTotal: totalHotMatches,
-          midHitRate: totalIssuesEvaluated > 0 ? totalMidHits / totalIssuesEvaluated : 0,
-          midHitCount: totalMidHits,
-          midMatchesTotal: totalMidMatches,
-          killInterceptRate: totalIssuesEvaluated > 0 ? totalKillIntercepts / totalIssuesEvaluated : 0,
-          killInterceptCount: totalKillIntercepts,
-          killFailCount: totalKillFails,
+          hotHitRate,
+          hotHitCount: totalHotHitZodiacs,
+          hotMatchesTotal: totalHotRecommended,
+          midHitRate,
+          midHitCount: totalMidHitZodiacs,
+          midMatchesTotal: totalMidRecommended,
+          killInterceptRate,
+          killInterceptCount: totalKillRecommended - totalKillLeakZodiacs,
+          killFailCount: totalKillLeakZodiacs, // Leak count
+          totalKillRecommended,
           numHitsTotal: totalNumHits,
+          weightedHitRate
         },
         results
       });
