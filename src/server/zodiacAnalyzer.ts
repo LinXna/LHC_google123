@@ -1523,6 +1523,172 @@ export class ZodiacPatternAnalyzer {
       }
     }
 
+    // =========================================================================
+    // F6 升级：生肖重叠与多重组合现象规律统计 (aa, bb, cc, d 等组合)
+    // =========================================================================
+    const getMultiplicitySignature = (zodiacs: string[]): { signature: string; label: string } => {
+      const counts: Record<string, number> = {};
+      for (const z of zodiacs) {
+        counts[z] = (counts[z] || 0) + 1;
+      }
+      const freqList = Object.values(counts).sort((a, b) => b - a);
+      const distinctCount = freqList.length;
+      const duplicates = freqList.filter(f => f > 1);
+      
+      let signature = "无重叠";
+      let label = "无重叠 (7个不同生肖)";
+      
+      if (duplicates.length > 0) {
+        const parts: string[] = [];
+        for (const d of duplicates) {
+          if (d === 2) parts.push("aa");
+          else if (d === 3) parts.push("aaa");
+          else if (d === 4) parts.push("aaaa");
+          else if (d === 5) parts.push("aaaaa");
+          else if (d === 6) parts.push("aaaaaa");
+          else if (d === 7) parts.push("aaaaaaa");
+        }
+        signature = parts.join(", ");
+        
+        if (signature === "aa") {
+          label = "aa, b, c, d, e (1双重叠, 6个不同生肖)";
+        } else if (signature === "aa, aa") {
+          signature = "aa, bb";
+          label = "aa, bb, c, d (2双重叠, 5个不同生肖)";
+        } else if (signature === "aa, aa, aa") {
+          signature = "aa, bb, cc";
+          label = "aa, bb, cc, d (3双重叠, 4个不同生肖)";
+        } else if (signature === "aaa") {
+          label = "aaa, b, c, d (1三重叠, 5个不同生肖)";
+        } else if (signature === "aaa, aa") {
+          signature = "aaa, bb";
+          label = "aaa, bb, c (1三叠1双叠, 4个不同生肖)";
+        } else if (signature === "aaaa") {
+          label = "aaaa, b, c (1四重叠, 4个不同生肖)";
+        } else {
+          label = `${signature} 复杂重叠组合 (${distinctCount}个不同生肖)`;
+        }
+      }
+      return { signature, label };
+    };
+
+    // Gather history matches
+    const multiplicityTally: Record<string, {
+      label: string;
+      totalCount: number;
+      repeatMatches: number;
+      nextZodiacCounts: Record<string, number>;
+      nextDiversityCounts: Record<number, number>;
+    }> = {};
+
+    for (let i = 0; i < totalPeriods - 1; i++) {
+      const currZ = zodiacMatrix[i];
+      const nextZ = zodiacMatrix[i + 1];
+      const { signature, label } = getMultiplicitySignature(currZ);
+      
+      if (!multiplicityTally[signature]) {
+        const counts: Record<string, number> = {};
+        for (const z of this.zodiacOrder) counts[z] = 0;
+        multiplicityTally[signature] = {
+          label,
+          totalCount: 0,
+          repeatMatches: 0,
+          nextZodiacCounts: counts,
+          nextDiversityCounts: {}
+        };
+      }
+      
+      const item = multiplicityTally[signature];
+      item.totalCount++;
+      
+      // Check repeat
+      const currSet = new Set(currZ);
+      const nextSet = new Set(nextZ);
+      let repeats = false;
+      for (const z of currSet) {
+        if (nextSet.has(z)) {
+          repeats = true;
+          break;
+        }
+      }
+      if (repeats) {
+        item.repeatMatches++;
+      }
+      
+      // Next zodiac counts
+      for (const nz of nextZ) {
+        if (item.nextZodiacCounts[nz] !== undefined) {
+          item.nextZodiacCounts[nz]++;
+        }
+      }
+      
+      // Next diversity count
+      const nextDiv = nextSet.size;
+      item.nextDiversityCounts[nextDiv] = (item.nextDiversityCounts[nextDiv] || 0) + 1;
+    }
+
+    const zodiacMultiplicityRules: any[] = [];
+    for (const [sig, info] of Object.entries(multiplicityTally)) {
+      const total = info.totalCount;
+      if (total === 0) continue;
+      
+      const nextDiversityDistribution: Record<number, number> = {};
+      for (const [div, cnt] of Object.entries(info.nextDiversityCounts)) {
+        nextDiversityDistribution[parseInt(div)] = cnt / total;
+      }
+      
+      const hotList: [string, number, number][] = [];
+      for (const [z, count] of Object.entries(info.nextZodiacCounts)) {
+        const pct = count / (total * 7); // average occurrence density
+        const appearanceRate = count / total; // probability of appearing in next draw
+        hotList.push([z, count, appearanceRate]);
+      }
+      
+      // Sort and separate
+      hotList.sort((a, b) => b[2] - a[2]);
+      
+      // Hottest next zodiacs: top 3
+      const hottestZodiacs = hotList.slice(0, 3);
+      
+      // Coolest next zodiacs: bottom 3
+      const coolestZodiacs = [...hotList].reverse().slice(0, 3);
+      
+      zodiacMultiplicityRules.push({
+        signature: sig,
+        label: info.label,
+        totalCount: total,
+        rate: total / (totalPeriods - 1),
+        nextDiversityDistribution,
+        nextRepeatRate: info.repeatMatches / total,
+        hottestZodiacs,
+        coolestZodiacs
+      });
+    }
+
+    // Sort by totalCount descending so that popular ones appear first
+    zodiacMultiplicityRules.sort((a, b) => b.totalCount - a.totalCount);
+
+    // Apply scoring impact if the latest draw matches any pattern
+    const latestRowZ = zodiacMatrix[totalPeriods - 1] || [];
+    const { signature: latestSig } = getMultiplicitySignature(latestRowZ);
+    const matchingMultiRule = zodiacMultiplicityRules.find(r => r.signature === latestSig);
+    if (matchingMultiRule && matchingMultiRule.totalCount >= 4) {
+      for (const [zName, cnt, pct] of matchingMultiRule.hottestZodiacs) {
+        if (pct >= 0.70) {
+          addScore(zName, 3.5, `F6最新重叠形态【${latestSig}】次期黄金强热点(历史概率${(pct * 100).toFixed(0)}%)`, matchingMultiRule.totalCount);
+        } else if (pct >= 0.50) {
+          addScore(zName, 2.0, `F6最新重叠形态【${latestSig}】次期热点(历史概率${(pct * 100).toFixed(0)}%)`, matchingMultiRule.totalCount);
+        }
+      }
+      for (const [zName, cnt, pct] of matchingMultiRule.coolestZodiacs) {
+        if (cnt === 0) {
+          addScore(zName, -4.5, `F6最新重叠形态【${latestSig}】次期绝对排除绝杀`, matchingMultiRule.totalCount);
+        } else if (pct < 0.20) {
+          addScore(zName, -2.5, `F6最新重叠形态【${latestSig}】次期冷门偏振排斥(历史概率${(pct * 100).toFixed(0)}%)`, matchingMultiRule.totalCount);
+        }
+      }
+    }
+
     const ranking = Object.entries(zodiacScore)
       .map(([z, info]) => [z, info] as [string, ZodiacScoreDetail])
       .sort((a, b) => b[1].score - a[1].score);
@@ -1560,7 +1726,8 @@ export class ZodiacPatternAnalyzer {
         count_resonance,
         zodiac_resonance
       },
-      special_zodiac_bias: specialZodiacBias
+      special_zodiac_bias: specialZodiacBias,
+      zodiac_multiplicity_rules: zodiacMultiplicityRules
     };
   }
 
@@ -1731,33 +1898,91 @@ export class ZodiacPatternAnalyzer {
 
     const sortedZodiacs = Object.entries(scores).sort((a, b) => b[1] - a[1]);
     
-    // 相对排名动态分档算法 (Relative Rank Partitioning)
-    // 解决多维度规则积分通胀导致所有生肖都归入主攻（或防守/绝杀为空）的系统性偏差。
+    // 极差自适应多阈值决策引擎 (Adaptive Spreading Multi-Threshold Classifier)
+    // 告别机械的 4-4-4 平均均分，基于信号强度（对冲偏差）进行动态智能划分
     const tierHot: string[] = [];
     const tierMid: string[] = [];
     const tierKill: string[] = [];
 
-    // 1. 触发一票否决(vetoKillers)或最终乘数为0的生肖无条件进入「死穴绝杀」
+    // 1. 提取否决或零分生肖
     const vetoed = sortedZodiacs.filter(x => vetoKillers.has(x[0]) || x[1] === 0).map(x => x[0]);
-    const active = sortedZodiacs.filter(x => !vetoKillers.has(x[0]) && x[1] > 0);
+    const activeCandidates = sortedZodiacs.filter(x => !vetoKillers.has(x[0]) && x[1] > 0);
 
-    // 2. 核心主攻 (重磅精选): 严格限定得分最高的前 4 个生肖，确保高精度决策
-    const hotCount = Math.min(4, active.length);
-    for (let i = 0; i < hotCount; i++) {
-      tierHot.push(active[i][0]);
+    if (activeCandidates.length > 0) {
+      const maxScore = activeCandidates[0][1];
+      const minScore = activeCandidates[activeCandidates.length - 1][1];
+      const avgScore = activeCandidates.reduce((sum, item) => sum + item[1], 0) / activeCandidates.length;
+
+      // 动态计算核心主攻门槛：必须超过 neutral 基础线 (100) 且距离最高分有足够的信噪比
+      // 若极差大，则精细筛选；若极差小（说明信号弱），则保留绝对前 2-3 个
+      const scoreSpread = maxScore - 100;
+      let hotThreshold = 103.0;
+      if (scoreSpread > 5) {
+        hotThreshold = Math.max(103.0, maxScore - scoreSpread * 0.35);
+      }
+
+      // 绝杀底线过滤门槛 (低于 97 分或底部的负面生肖，表明其统计概率呈明显的偏振抑制)
+      const killThreshold = 97.0;
+
+      // 分档归属
+      for (const [zodiac, score] of activeCandidates) {
+        if (score >= hotThreshold) {
+          tierHot.push(zodiac);
+        } else if (score < killThreshold) {
+          tierKill.push(zodiac);
+        } else {
+          tierMid.push(zodiac);
+        }
+      }
+
+      // 边界弹性保护：防止由于数据分布极端导致某个分档为空
+      // 保证主攻（核心精选）至少有 2 个生肖，且不超过 5 个生肖，确保决策凝聚度
+      if (tierHot.length === 0) {
+        tierHot.push(...activeCandidates.slice(0, 2).map(x => x[0]));
+      } else if (tierHot.length > 5) {
+        const excess = tierHot.slice(5);
+        tierHot.length = 5;
+        tierMid.unshift(...excess);
+      }
+
+      // 如果 tierHot 只有 1 个，且存在次席高分者，适度吸收第 2 个
+      if (tierHot.length === 1 && activeCandidates.length > 1) {
+        const secondZ = activeCandidates[1][0];
+        const idx = tierMid.indexOf(secondZ);
+        if (idx !== -1) {
+          tierMid.splice(idx, 1);
+          tierHot.push(secondZ);
+        }
+      }
+
+      // 保证死穴排除在没有硬性否决的情况下，至少保留 2 个评分最低的进行对冲
+      if (tierKill.length < 2 && activeCandidates.length > tierHot.length + 1) {
+        const needed = 2 - tierKill.length;
+        const potentialKills = activeCandidates.slice(-needed).map(x => x[0]);
+        for (const pk of potentialKills) {
+          if (!tierHot.includes(pk)) {
+            const mIdx = tierMid.indexOf(pk);
+            if (mIdx !== -1) {
+              tierMid.splice(mIdx, 1);
+            }
+            if (!tierKill.includes(pk)) {
+              tierKill.push(pk);
+            }
+          }
+        }
+      }
     }
 
-    // 3. 稳健防守 (次要防守): 接下来得分最高的 4 个生肖作为防守覆盖
-    const midCount = Math.min(4, active.length - hotCount);
-    for (let i = 0; i < midCount; i++) {
-      tierMid.push(active[i + hotCount][0]);
-    }
-
-    // 4. 其余生肖连同被绝杀的生肖，一并划入「死穴绝杀」
-    for (let i = hotCount + midCount; i < active.length; i++) {
-      tierKill.push(active[i][0]);
-    }
     tierKill.push(...vetoed);
+    // 去重保证各个 tier 的不相交和完备性
+    const finalKillSet = new Set(tierKill);
+    const finalHotSet = new Set(tierHot);
+    const finalMid = tierMid.filter(z => !finalKillSet.has(z) && !finalHotSet.has(z));
+    
+    tierMid.length = 0;
+    tierMid.push(...finalMid);
+
+    evalReasons.push(`【自适应分档定级】采用偏振极差自适应分级，动态识别出【${tierHot.length}】个重磅主攻、【${tierMid.length}】个稳健防守、【${tierKill.length}】个死穴排除，科学对冲了人工均分造成的虚假平衡。`);
 
     const latestIssueNum = report.latest_issue || lastRecord.issue;
     let nextIssue = "下一";

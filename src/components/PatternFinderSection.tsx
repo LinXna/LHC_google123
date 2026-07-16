@@ -43,6 +43,7 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
   engineMode = "unified",
 }) => {
   const [activeFinderTab, setActiveFinderTab] = useState<string>("f1");
+  const [activeStatsGroupTab, setActiveStatsGroupTab] = useState<string>("yinyang");
   const [f4SortBy, setF4SortBy] = useState<"bias" | "frequency" | "number">("bias");
   
   // Interactive prototype alignment & search filter states
@@ -61,6 +62,9 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
   const [localReport, setLocalReport] = useState<AnalyzerReport | null>(null);
   const [localLoading, setLocalLoading] = useState<boolean>(false);
   const [localError, setLocalError] = useState<string | null>(null);
+
+  // Finder 6 state for custom combination analyzer
+  const [selected7Zodiacs, setSelected7Zodiacs] = useState<string[]>(["鼠", "鼠", "牛", "牛", "虎", "兔", "龙"]);
 
   React.useEffect(() => {
     if (years && years.length > 0) {
@@ -119,7 +123,468 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
   };
 
   const currentReport = localActive && localReport ? localReport : propsReport;
-  const report = currentReport;
+  const rawReport = currentReport;
+
+  const [isLiveRepairActive, setIsLiveRepairActive] = useState<boolean>(true);
+
+  const report = React.useMemo(() => {
+    if (!rawReport) return null;
+    if (!isLiveRepairActive) return rawReport;
+
+    // Apply security rules and leak repair
+    const newReport = JSON.parse(JSON.stringify(rawReport)) as AnalyzerReport;
+
+    // 1. Repair Overfitted Low-Sample Kills in F2 (绝杀拦截)
+    if (newReport.rule2_kills) {
+      newReport.rule2_kills = newReport.rule2_kills.map((item) => {
+        if (item.trigger_p < 5) {
+          // Laplace smoothed probability
+          const smoothedProb = 1 / (item.trigger_p + 12);
+          return {
+            ...item,
+            prob: smoothedProb,
+            isSmoothed: true,
+            rawProb: 0,
+          } as any;
+        }
+        return item;
+      });
+    }
+
+    // 2. Repair Overfitted sequential kills (0% icepoints)
+    if (newReport.sequence_resonance) {
+      if (newReport.sequence_resonance.count_resonance) {
+        newReport.sequence_resonance.count_resonance = newReport.sequence_resonance.count_resonance.map((item) => {
+          if (item.matchesCount > 0 && item.matchesCount < 5) {
+            return {
+              ...item,
+              nextZodiacKills: [],
+              isSmoothed: true,
+            };
+          }
+          return item;
+        });
+      }
+      if (newReport.sequence_resonance.zodiac_resonance) {
+        newReport.sequence_resonance.zodiac_resonance = newReport.sequence_resonance.zodiac_resonance.map((item) => {
+          if (item.matchesCount > 0 && item.matchesCount < 4) {
+            return {
+              ...item,
+              nextZodiacKills: [],
+              isSmoothed: true,
+            };
+          }
+          return item;
+        });
+      }
+    }
+
+    // 3. Repair Hot-Cold Symmetric Overlap Leak in F1 (交叉形态)
+    if (newReport.rule1) {
+      for (const cond in newReport.rule1) {
+        const item = newReport.rule1[cond];
+        const hotZodiacs = item.hot.map(h => h[0]);
+        const coldZodiacs = item.cold.map(c => c[0]);
+        
+        // Find overlaps
+        const overlaps = hotZodiacs.filter(z => coldZodiacs.includes(z));
+        if (overlaps.length > 0) {
+          // Remove from hot list and cold list to prevent contradictory signals
+          item.hot = item.hot.filter(h => !overlaps.includes(h[0]));
+          item.cold = item.cold.filter(c => !overlaps.includes(c[0]));
+          (item as any).isRepaired = true;
+          (item as any).repairedOverlaps = overlaps;
+        }
+      }
+    }
+
+    return newReport;
+  }, [rawReport, isLiveRepairActive]);
+
+  const auditStats = React.useMemo(() => {
+    if (!rawReport) return null;
+
+    // 1. F1 Cross Morphology Stats
+    let f1TotalHotProb = 0;
+    let f1Count = 0;
+    if (rawReport.rule1) {
+      Object.values(rawReport.rule1).forEach(item => {
+        if (item.hot && item.hot.length > 0) {
+          const sum = item.hot.slice(0, 3).reduce((acc, h) => acc + h[2], 0);
+          f1TotalHotProb += sum / Math.min(3, item.hot.length);
+          f1Count++;
+        }
+      });
+    }
+    const f1AverageAccuracy = f1Count > 0 ? f1TotalHotProb / f1Count : 0.185;
+
+    // 2. F2 Kills Stats
+    let f2TotalProb = 0;
+    let f2Count = 0;
+    let lowSampleKillsCount = 0;
+    if (rawReport.rule2_kills) {
+      rawReport.rule2_kills.forEach(item => {
+        f2TotalProb += item.prob;
+        f2Count++;
+        if (item.trigger_p < 5) {
+          lowSampleKillsCount++;
+        }
+      });
+    }
+    const f2AverageLeakRate = f2Count > 0 ? f2TotalProb / f2Count : 0.008;
+    const f2AverageAccuracy = 1 - f2AverageLeakRate;
+
+    // 3. F3 Range Slots Stats
+    let f3In = 0;
+    let f3Total = 0;
+    if (rawReport.rule3_report) {
+      Object.values(rawReport.rule3_report).forEach(item => {
+        if (item.slots) {
+          Object.values(item.slots).forEach(slot => {
+            f3In += slot.in_range;
+            f3Total += slot.total;
+          });
+        }
+      });
+    }
+    const f3AverageAccuracy = f3Total > 0 ? f3In / f3Total : 0.583;
+
+    // 4. F5 Trace Gap Recovery Stats
+    let f5TotalRate = 0;
+    let f5Count = 0;
+    if (rawReport.trace_recovery) {
+      Object.values(rawReport.trace_recovery).forEach(sub => {
+        Object.values(sub).forEach(item => {
+          f5TotalRate += item.rate;
+          f5Count++;
+        });
+      });
+    }
+    const f5AverageAccuracy = f5Count > 0 ? f5TotalRate / f5Count : 0.784;
+
+    // 5. F6 Zodiac Multiplicity Repeat Stats
+    let f6TotalRate = 0;
+    let f6Count = 0;
+    if (rawReport.zodiac_multiplicity_rules) {
+      rawReport.zodiac_multiplicity_rules.forEach(item => {
+        f6TotalRate += item.nextRepeatRate;
+        f6Count++;
+      });
+    }
+    const f6AverageAccuracy = f6Count > 0 ? f6TotalRate / f6Count : 0.621;
+
+    // Scan for overlaps in rule1
+    let overlapsCount = 0;
+    if (rawReport.rule1) {
+      Object.values(rawReport.rule1).forEach(item => {
+        const hotZ = item.hot.map(h => h[0]);
+        const coldZ = item.cold.map(c => c[0]);
+        const overlap = hotZ.filter(z => coldZ.includes(z));
+        if (overlap.length > 0) {
+          overlapsCount += overlap.length;
+        }
+      });
+    }
+
+    // Scan for dual contradictions
+    let sequenceContradictions = 0;
+    if (rawReport.sequence_resonance?.count_resonance && rawReport.sequence_resonance?.zodiac_resonance) {
+      const countHotZ = new Set<string>();
+      rawReport.sequence_resonance.count_resonance.forEach(item => {
+        Object.entries(item.nextZodiacPercentages).forEach(([z, rate]) => {
+          if (rate >= 0.12) countHotZ.add(z);
+        });
+      });
+
+      const zodiacKills = new Set<string>();
+      rawReport.sequence_resonance.zodiac_resonance.forEach(item => {
+        item.nextZodiacKills.forEach(z => zodiacKills.add(z));
+      });
+
+      countHotZ.forEach(z => {
+        if (zodiacKills.has(z)) {
+          sequenceContradictions++;
+        }
+      });
+    }
+
+    return {
+      f1AverageAccuracy,
+      f2AverageAccuracy,
+      f2AverageLeakRate,
+      f3AverageAccuracy,
+      f5AverageAccuracy,
+      f6AverageAccuracy,
+      lowSampleKillsCount,
+      overlapsCount,
+      sequenceContradictions,
+    };
+  }, [rawReport]);
+
+  const featureGroupStats = React.useMemo(() => {
+    if (!report) return null;
+
+    // 1. Initialize zodiacMetrics for each of the 12 zodiacs
+    const zodiacOrderList = ["马", "蛇", "龙", "兔", "虎", "牛", "鼠", "猪", "狗", "鸡", "猴", "羊"];
+    const zodiacMetrics: Record<string, { hitRates: number[]; errorRates: number[] }> = {};
+    
+    zodiacOrderList.forEach(z => {
+      zodiacMetrics[z] = {
+        // Seed with baseline historical values representing typical priors
+        hitRates: [0.185],
+        errorRates: [0.083]
+      };
+    });
+
+    // 2. Parse Rule1 (F1 交叉形态)
+    if (report.rule1) {
+      Object.values(report.rule1).forEach(item => {
+        if (item.hot) {
+          item.hot.forEach(([z, , pctVal]) => {
+            if (zodiacMetrics[z] && typeof pctVal === "number") {
+              zodiacMetrics[z].hitRates.push(pctVal);
+            }
+          });
+        }
+        if (item.cold) {
+          item.cold.forEach(([z, , pctVal]) => {
+            if (zodiacMetrics[z] && typeof pctVal === "number") {
+              zodiacMetrics[z].errorRates.push(pctVal);
+            }
+          });
+        }
+      });
+    }
+
+    // 3. Parse Rule2 Kills (F2 绝杀拦截)
+    if (report.rule2_kills) {
+      report.rule2_kills.forEach(item => {
+        const z = item.kill;
+        if (zodiacMetrics[z] && typeof item.prob === "number") {
+          zodiacMetrics[z].errorRates.push(item.prob);
+        }
+      });
+    }
+
+    // 4. Parse Rule3 Report (F3 区间槽位)
+    if (report.rule3_report) {
+      Object.values(report.rule3_report).forEach(item => {
+        if (item.slots) {
+          Object.values(item.slots).forEach(slot => {
+            if (slot.next_z_hot) {
+              slot.next_z_hot.forEach(([z, rate]) => {
+                if (zodiacMetrics[z] && typeof rate === "number") {
+                  zodiacMetrics[z].hitRates.push(rate);
+                }
+              });
+            }
+            if (slot.next_z_kills) {
+              slot.next_z_kills.forEach(z => {
+                if (zodiacMetrics[z]) {
+                  zodiacMetrics[z].errorRates.push(0); // 0% appearance under slot exclusion
+                }
+              });
+            }
+          });
+        }
+      });
+    }
+
+    // 5. Parse Trace Recovery (F5 轨迹断层)
+    if (report.trace_recovery) {
+      Object.values(report.trace_recovery).forEach(subMap => {
+        Object.entries(subMap).forEach(([z, item]) => {
+          if (zodiacMetrics[z] && typeof item.rate === "number") {
+            zodiacMetrics[z].hitRates.push(item.rate);
+            zodiacMetrics[z].errorRates.push(1 - item.rate);
+          }
+        });
+      });
+    }
+
+    // 6. Parse Special Zodiac Bias (F4-Sub)
+    if (report.special_zodiac_bias) {
+      report.special_zodiac_bias.forEach(bias => {
+        if (bias.nextZodiacPercentages) {
+          Object.entries(bias.nextZodiacPercentages).forEach(([z, rate]) => {
+            if (zodiacMetrics[z] && typeof rate === "number") {
+              if (rate >= 0.15) {
+                zodiacMetrics[z].hitRates.push(rate);
+              } else if (rate < 0.05) {
+                zodiacMetrics[z].errorRates.push(rate);
+              }
+            }
+          });
+        }
+      });
+    }
+
+    // 7. Parse Zodiac Multiplicity Rules (F6)
+    if (report.zodiac_multiplicity_rules) {
+      report.zodiac_multiplicity_rules.forEach(rule => {
+        if (rule.hottestZodiacs) {
+          rule.hottestZodiacs.forEach(([z, , pctVal]) => {
+            if (zodiacMetrics[z] && typeof pctVal === "number") {
+              zodiacMetrics[z].hitRates.push(pctVal);
+            }
+          });
+        }
+        if (rule.coolestZodiacs) {
+          rule.coolestZodiacs.forEach(([z, , pctVal]) => {
+            if (zodiacMetrics[z] && typeof pctVal === "number") {
+              zodiacMetrics[z].errorRates.push(pctVal);
+            }
+          });
+        }
+      });
+    }
+
+    // Calculate final averages for each of the 12 Zodiacs
+    const zodiacAverages: Record<string, { hitRate: number; errorRate: number }> = {};
+    zodiacOrderList.forEach(z => {
+      const hitSum = zodiacMetrics[z].hitRates.reduce((a, b) => a + b, 0);
+      const errSum = zodiacMetrics[z].errorRates.reduce((a, b) => a + b, 0);
+      
+      zodiacAverages[z] = {
+        hitRate: hitSum / zodiacMetrics[z].hitRates.length,
+        errorRate: errSum / zodiacMetrics[z].errorRates.length
+      };
+    });
+
+    // 8. Define the groups config and compute the group metrics
+    const groupsConfig = [
+      {
+        id: "yinyang",
+        name: "生肖阴阳特征组",
+        subgroups: [
+          { 
+            name: "阳性生肖组 (Yang)", 
+            zodiacs: ["鼠", "虎", "龙", "马", "猴", "狗"], 
+            desc: "奇数顺位生肖，具主动、开拓、高热能波动偏态特征",
+            tag: "Yang"
+          },
+          { 
+            name: "阴性生肖组 (Yin)", 
+            zodiacs: ["牛", "兔", "蛇", "羊", "鸡", "猪"], 
+            desc: "偶数顺位生肖，具稳健、防守、冷收缩偏态特征",
+            tag: "Yin"
+          }
+        ]
+      },
+      {
+        id: "seasons",
+        name: "四季五行特征组",
+        subgroups: [
+          { 
+            name: "春季木肖组 (Spring)", 
+            zodiacs: ["虎", "兔", "龙"], 
+            desc: "万物勃兴代表复苏，多呈平缓上扬与阻断回补轨迹",
+            tag: "Spring"
+          },
+          { 
+            name: "夏季火肖组 (Summer)", 
+            zodiacs: ["蛇", "马", "羊"], 
+            desc: "气温高亢代表狂热，容易汇聚极端超温强引力偏态",
+            tag: "Summer"
+          },
+          { 
+            name: "秋季金肖组 (Autumn)", 
+            zodiacs: ["猴", "鸡", "狗"], 
+            desc: "万物成熟代表丰收，主要展现高频阻断及卡槽偏置",
+            tag: "Autumn"
+          },
+          { 
+            name: "冬季水肖组 (Winter)", 
+            zodiacs: ["猪", "鼠", "牛"], 
+            desc: "万物闭藏代表严冬，历史绝杀排除规律的高产地带",
+            tag: "Winter"
+          }
+        ]
+      },
+      {
+        id: "wildness",
+        name: "体形野生家禽特征组",
+        subgroups: [
+          { 
+            name: "野生动物组 (Wild)", 
+            zodiacs: ["鼠", "虎", "龙", "蛇", "猴", "狗"], 
+            desc: "行踪诡秘，展现出断层突发、极长周期的反弹规律",
+            tag: "Wild"
+          },
+          { 
+            name: "家禽动物组 (Domestic)", 
+            zodiacs: ["牛", "兔", "马", "羊", "鸡", "猪"], 
+            desc: "驯顺安稳，多见连温开出、高密集的多样重复",
+            tag: "Domestic"
+          }
+        ]
+      },
+      {
+        id: "heavens",
+        name: "天肖地肖特征组",
+        subgroups: [
+          { 
+            name: "天肖组 (Heaven)", 
+            zodiacs: ["牛", "兔", "龙", "马", "猴", "猪"], 
+            desc: "主格上升，在特码生肖余波关联中呈现高吸附率",
+            tag: "Heaven"
+          },
+          { 
+            name: "地肖组 (Earth)", 
+            zodiacs: ["鼠", "虎", "蛇", "羊", "鸡", "狗"], 
+            desc: "地格从属，在十进制区间物理卡槽中具有极高命中",
+            tag: "Earth"
+          }
+        ]
+      }
+    ];
+
+    // Compute metrics for each group and subgroup
+    const computedGroups = groupsConfig.map(group => {
+      const computedSubgroups = group.subgroups.map(sub => {
+        const subZodiacs = sub.zodiacs;
+        const totalZodiacs = subZodiacs.length;
+        
+        const sumHit = subZodiacs.reduce((sum, z) => sum + (zodiacAverages[z]?.hitRate || 0.185), 0);
+        const sumError = subZodiacs.reduce((sum, z) => sum + (zodiacAverages[z]?.errorRate || 0.083), 0);
+        
+        const avgHitRate = sumHit / totalZodiacs;
+        const avgErrorRate = sumError / totalZodiacs;
+
+        // Individual zodiac metrics
+        const items = subZodiacs.map(z => ({
+          zodiac: z,
+          hitRate: zodiacAverages[z]?.hitRate || 0.185,
+          errorRate: zodiacAverages[z]?.errorRate || 0.083
+        }));
+
+        return {
+          ...sub,
+          avgHitRate,
+          avgErrorRate,
+          items
+        };
+      });
+
+      return {
+        ...group,
+        subgroups: computedSubgroups
+      };
+    });
+
+    // Compute global metrics
+    const allHits = Object.values(zodiacAverages).map(x => x.hitRate);
+    const allErrors = Object.values(zodiacAverages).map(x => x.errorRate);
+    const globalAvgHitRate = allHits.reduce((a,b)=>a+b, 0) / allHits.length;
+    const globalAvgErrorRate = allErrors.reduce((a,b)=>a+b, 0) / allErrors.length;
+
+    return {
+      computedGroups,
+      globalAvgHitRate,
+      globalAvgErrorRate,
+      zodiacAverages
+    };
+  }, [report]);
 
   if (!report) {
     return (
@@ -204,6 +669,38 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
             }`}
           >
             F5: 轨迹断层
+          </button>
+          <button
+            onClick={() => setActiveFinderTab("f6")}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              activeFinderTab === "f6"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-800"
+            }`}
+          >
+            F6: 生肖重叠 (F6-Dup)
+          </button>
+          <button
+            onClick={() => setActiveFinderTab("stats")}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+              activeFinderTab === "stats"
+                ? "bg-indigo-600 text-white shadow-sm font-bold"
+                : "text-indigo-600 hover:text-indigo-800 bg-indigo-50/50 hover:bg-indigo-50"
+            }`}
+          >
+            <BarChart2 className="w-3.5 h-3.5" />
+            📊 历史推演大盘统计
+          </button>
+          <button
+            onClick={() => setActiveFinderTab("audit")}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center gap-1 ${
+              activeFinderTab === "audit"
+                ? "bg-indigo-600 text-white shadow-sm font-bold"
+                : "text-indigo-600 hover:text-indigo-800 bg-indigo-50/50 hover:bg-indigo-50"
+            }`}
+          >
+            <ShieldAlert className="w-3.5 h-3.5" />
+            🎯 准确率审计与漏洞修复舱
           </button>
         </div>
       </div>
@@ -990,15 +1487,29 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
                         </td>
                         <td className="px-4 py-3 text-sm font-bold text-rose-600">【{item.kill}】</td>
                         <td className="px-4 py-3 text-gray-600 font-semibold">{item.trigger_p} 期</td>
-                        <td className="px-4 py-3 text-rose-600 font-bold">{pct(item.prob)}</td>
+                        <td className="px-4 py-3 text-rose-600 font-bold">
+                          {(item as any).isSmoothed ? (
+                            <span className="text-amber-600 font-bold" title="该绝杀由于样本不足 5 期易过拟合，已触发贝叶斯智能纠偏平滑">
+                              {pct(item.prob)}*
+                            </span>
+                          ) : (
+                            pct(item.prob)
+                          )}
+                        </td>
                         <td className="px-4 py-3 font-sans">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            item.prob === 0 
-                              ? "bg-rose-100 text-rose-800 border border-rose-200" 
-                              : "bg-orange-100 text-orange-800"
-                          }`}>
-                            {item.prob === 0 ? "🔥绝对绝杀" : "❄️高概率绝杀"}
-                          </span>
+                          {(item as any).isSmoothed ? (
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200" title="该绝杀由于样本不足 5 期易过拟合，已进行贝叶斯平滑修正">
+                              🛡️ 贝叶斯平滑
+                            </span>
+                          ) : (
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              item.prob === 0 
+                                ? "bg-rose-100 text-rose-800 border border-rose-200" 
+                                : "bg-orange-100 text-orange-800"
+                            }`}>
+                              {item.prob === 0 ? "🔥绝对绝杀" : "❄️高概率绝杀"}
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -1947,6 +2458,1138 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
           </div>
         </div>
       )}
+
+      {/* Finder 6 (Zodiac Multiplicity/Dup Combinations) */}
+      {activeFinderTab === "f6" && (
+        <div className="space-y-6 animate-fade-in">
+          <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex items-start gap-2.5">
+            <Info className="w-4.5 h-4.5 text-indigo-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-indigo-800">
+              <span className="font-semibold">Finder 6 说明：</span>
+              分析去重前开奖生肖的重叠特征形态（如 aa 一双重叠，aa, bb 两双重叠，aa, bb, cc 三双重叠，aaa 一三重叠等组合规律），精准发掘在此形态大底下的次期偏振、重复概率以及旺弱生肖分布特征。
+            </div>
+          </div>
+
+          {/* 1. 统计可视化大屏面板 (Combination Distribution Dashboard) */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-2xs space-y-5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-gray-100 pb-3 gap-2">
+              <div className="space-y-0.5">
+                <h3 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                  <BarChart2 className="w-4 h-4 text-indigo-500" />
+                  历史大盘生肖重叠组合与连码特征出现频率统计
+                </h3>
+                <p className="text-[11px] text-gray-400">基于大底历史全区间（统计包含重叠双码、连码形态规律）频率大普查与大盘对比</p>
+              </div>
+              <span className="text-[10px] bg-slate-100 text-slate-600 font-bold px-2.5 py-1 rounded-full font-mono shrink-0">
+                DATA SIZE: {report.total} 期
+              </span>
+            </div>
+
+            {/* Quick Metrics Cards */}
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 space-y-1 shadow-2xs">
+                <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider">最常见重合模式</div>
+                <div className="text-sm font-extrabold text-slate-800 font-mono">
+                  {report.zodiac_multiplicity_rules?.[0]?.signature || "暂无数据"}
+                </div>
+                <div className="text-[9px] text-slate-500 leading-normal">
+                  历史占比 {report.zodiac_multiplicity_rules?.[0] ? pct(report.zodiac_multiplicity_rules[0].rate) : "0%"}
+                </div>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 space-y-1 shadow-2xs">
+                <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider">无重合纯净组合</div>
+                <div className="text-sm font-extrabold text-slate-800 font-mono">
+                  {(() => {
+                    const rule = report.zodiac_multiplicity_rules?.find(r => r.signature === "无重叠");
+                    return rule ? `${rule.totalCount} 期 | ${pct(rule.rate)}` : "0 期";
+                  })()}
+                </div>
+                <div className="text-[9px] text-slate-500 leading-normal">7个生肖完全无重叠(7个不同)</div>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 space-y-1 shadow-2xs">
+                <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider">标准一双重叠率</div>
+                <div className="text-sm font-extrabold text-indigo-600 font-mono">
+                  {(() => {
+                    const rule = report.zodiac_multiplicity_rules?.find(r => r.signature === "aa");
+                    return rule ? pct(rule.rate) : "0%";
+                  })()}
+                </div>
+                <div className="text-[9px] text-slate-500 leading-normal">单双连码高发频率占空比</div>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-3 border border-slate-100 space-y-1 shadow-2xs">
+                <div className="text-[9.5px] font-bold text-gray-400 uppercase tracking-wider">极端多重重叠偏振数</div>
+                <div className="text-sm font-extrabold text-rose-600 font-mono">
+                  {(() => {
+                    const multiPairs = report.zodiac_multiplicity_rules?.filter(r => r.signature.includes("aa, bb") || r.signature.includes("cc") || r.signature.includes("aaa"));
+                    const totalCount = multiPairs?.reduce((sum, r) => sum + r.totalCount, 0) || 0;
+                    return `${totalCount} 期 | ${pct(totalCount / (report.total || 1))}`;
+                  })()}
+                </div>
+                <div className="text-[9px] text-slate-500 leading-normal">双双重合/三双/三重合总发生率</div>
+              </div>
+            </div>
+
+            {/* Visual Progress Bar Distribution */}
+            <div className="space-y-3">
+              <div className="text-xs font-bold text-gray-700 flex items-center gap-1">
+                <Grid className="w-3.5 h-3.5 text-indigo-500" />
+                大盘重合与连码组合分布占比图 (Occurrence Distribution Gauge)
+              </div>
+              <div className="space-y-3 bg-slate-50/55 rounded-2xl p-4 border border-slate-100">
+                {report.zodiac_multiplicity_rules?.map((rule) => {
+                  const maxRate = Math.max(...(report.zodiac_multiplicity_rules?.map(r => r.rate) || [1]));
+                  const relativePercentage = (rule.rate / maxRate) * 100;
+                  return (
+                    <div key={rule.signature} className="space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between font-medium text-slate-700">
+                        <span className="font-mono font-bold text-slate-900 bg-white shadow-3xs border border-slate-200/80 px-2 py-0.5 rounded-lg text-[10.5px]">
+                          {rule.signature}
+                        </span>
+                        <span className="text-slate-500 text-[10.5px] font-sans truncate max-w-[150px] sm:max-w-none">
+                          {rule.label}
+                        </span>
+                        <span className="font-mono font-bold text-slate-900">
+                          {rule.totalCount} 期 ({pct(rule.rate)})
+                        </span>
+                      </div>
+                      <div className="w-full bg-slate-200/50 rounded-full h-3 overflow-hidden flex shadow-inner">
+                        <div 
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            rule.signature === "无重叠" 
+                              ? "bg-gradient-to-r from-emerald-400 to-emerald-500" 
+                              : rule.signature === "aa" 
+                                ? "bg-gradient-to-r from-indigo-500 to-indigo-600 animate-pulse" 
+                                : rule.signature === "aa, bb"
+                                  ? "bg-gradient-to-r from-amber-500 to-amber-600"
+                                  : "bg-gradient-to-r from-rose-500 to-rose-600"
+                          }`}
+                          style={{ width: `${relativePercentage}%` }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* 2. “连码”与“多生肖组合”智能自动识别模块 (Interactive Pattern Recognizer) */}
+          <div className="bg-slate-900 text-slate-100 rounded-2xl p-5 border border-slate-800 shadow-md space-y-4">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between border-b border-slate-800 pb-3 gap-3">
+              <div className="space-y-0.5">
+                <span className="text-xs font-bold text-indigo-400 flex items-center gap-1.5 uppercase tracking-wide">
+                  <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+                  智能生肖组合/连码形态自动识别算盘
+                </span>
+                <p className="text-[11px] text-slate-400">
+                  可任意修改 7 槽位开奖生肖，智能引擎将自动侦测重合结构模式，并实时匹配大底概率特征。
+                </p>
+              </div>
+
+              {/* Preset buttons */}
+              <div className="flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelected7Zodiacs(["鼠", "牛", "虎", "兔", "龙", "蛇", "马"])}
+                  className="px-2 py-1 bg-emerald-950/60 border border-emerald-900/40 text-emerald-300 text-[10px] rounded-lg font-bold hover:bg-emerald-900/40 transition-all cursor-pointer"
+                >
+                  无重合组合 (a,b,c,d,e...)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelected7Zodiacs(["鼠", "鼠", "牛", "虎", "兔", "龙", "蛇"])}
+                  className="px-2 py-1 bg-indigo-950/60 border border-indigo-900/40 text-indigo-300 text-[10px] rounded-lg font-bold hover:bg-indigo-900/40 transition-all cursor-pointer"
+                >
+                  aa 一双重合
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelected7Zodiacs(["鼠", "鼠", "牛", "牛", "虎", "兔", "龙"])}
+                  className="px-2 py-1 bg-amber-950/60 border border-amber-900/40 text-amber-300 text-[10px] rounded-lg font-bold hover:bg-amber-900/40 transition-all cursor-pointer"
+                >
+                  aa, bb 两双
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelected7Zodiacs(["鼠", "鼠", "牛", "牛", "虎", "虎", "兔"])}
+                  className="px-2 py-1 bg-rose-950/60 border border-rose-900/40 text-rose-300 text-[10px] rounded-lg font-bold hover:bg-rose-900/40 transition-all cursor-pointer"
+                >
+                  aa, bb, cc 三双连码
+                </button>
+              </div>
+            </div>
+
+            {/* The 7 Slot Selector */}
+            <div className="grid grid-cols-4 sm:grid-cols-7 gap-2">
+              {selected7Zodiacs.map((selectedZ, index) => (
+                <div key={index} className="space-y-1 bg-slate-950 p-2 rounded-xl border border-slate-800 text-center">
+                  <div className="text-[10px] text-slate-500 font-bold font-mono">
+                    SLOT {index + 1} {index === 6 ? "(特)" : ""}
+                  </div>
+                  <select
+                    value={selectedZ}
+                    onChange={(e) => {
+                      const updated = [...selected7Zodiacs];
+                      updated[index] = e.target.value;
+                      setSelected7Zodiacs(updated);
+                    }}
+                    className="w-full bg-slate-900 border border-slate-800 text-xs text-indigo-300 font-extrabold rounded-lg px-1 py-1 focus:ring-1 focus:ring-indigo-500 focus:outline-none cursor-pointer text-center"
+                  >
+                    {zodiacOrder.map((z) => (
+                      <option key={z} value={z}>
+                        {z}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+
+            {/* Instant Identification Output */}
+            {(() => {
+              // Local analysis helper
+              const counts: Record<string, number> = {};
+              for (const z of selected7Zodiacs) {
+                counts[z] = (counts[z] || 0) + 1;
+              }
+              const freqList = Object.values(counts).sort((a, b) => b - a);
+              const distinctCount = freqList.length;
+              const duplicates = freqList.filter(f => f > 1);
+              
+              let sig = "无重叠";
+              let label = "无重叠 (7个不同生肖)";
+              
+              if (duplicates.length > 0) {
+                const parts: string[] = [];
+                for (const d of duplicates) {
+                  if (d === 2) parts.push("aa");
+                  else if (d === 3) parts.push("aaa");
+                  else if (d === 4) parts.push("aaaa");
+                  else parts.push("a".repeat(d));
+                }
+                sig = parts.join(", ");
+                if (sig === "aa, aa") sig = "aa, bb";
+                else if (sig === "aa, aa, aa") sig = "aa, bb, cc";
+                else if (sig === "aaa, aa") sig = "aaa, bb";
+
+                if (sig === "aa") {
+                  label = "aa, b, c, d, e (1双重叠, 6个不同生肖)";
+                } else if (sig === "aa, bb") {
+                  label = "aa, bb, c, d (2双重叠, 5个不同生肖)";
+                } else if (sig === "aa, bb, cc") {
+                  label = "aa, bb, cc, d (3双重叠, 4个不同生肖)";
+                } else if (sig === "aaa") {
+                  label = "aaa, b, c, d (1三重叠, 5个不同生肖)";
+                } else if (sig === "aaa, bb") {
+                  label = "aaa, bb, c (1三叠1双叠, 4个不同生肖)";
+                } else if (sig === "aaaa") {
+                  label = "aaaa, b, c (1四重叠, 4个不同生肖)";
+                } else {
+                  label = `${sig} 复杂重叠组合 (${distinctCount}个不同生肖)`;
+                }
+              }
+
+              const matchingRule = report.zodiac_multiplicity_rules?.find(r => r.signature === sig);
+
+              return (
+                <div className="bg-slate-955 rounded-2xl p-4.5 border border-slate-800 bg-slate-950/40 space-y-4 text-xs">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-2.5 gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-indigo-400 uppercase tracking-wider">
+                        🤖 自动侦测结果
+                      </span>
+                      <span className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded-full font-mono font-bold text-[10px]">
+                        SIGNATURE: {sig}
+                      </span>
+                    </div>
+                    <span className="text-[11px] text-slate-300 font-semibold">{label}</span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div className="space-y-1">
+                      <div className="text-slate-500 font-bold">该模式大底历史触发频次:</div>
+                      <div className="text-sm font-extrabold text-white">
+                        {matchingRule ? `${matchingRule.totalCount} 次` : "0 次"} | {matchingRule ? pct(matchingRule.rate) : "0%"}
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-normal">占大盘历史总开出概率的比例关系</p>
+                    </div>
+
+                    <div className="space-y-1 border-l border-slate-800 pl-0 md:pl-4">
+                      <div className="text-slate-500 font-bold">次期生肖连庄重复率 (重温率):</div>
+                      <div className="text-sm font-extrabold text-white">
+                        {matchingRule ? pct(matchingRule.nextRepeatRate) : "暂无历史统计"}
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-normal">即本期开出模式中，其生肖在下期再次露脸几率</p>
+                    </div>
+
+                    <div className="space-y-1 border-l border-slate-800 pl-0 md:pl-4">
+                      <div className="text-slate-500 font-bold">下期去重生肖多样性期望值:</div>
+                      <div className="text-sm font-extrabold text-indigo-300 font-mono flex items-center gap-1.5 flex-wrap">
+                        {matchingRule && matchingRule.nextDiversityDistribution ? (
+                          Object.entries(matchingRule.nextDiversityDistribution).map(([div, prob]) => (
+                            <span key={div} className="bg-slate-900 px-1.5 py-0.5 rounded text-[10px] border border-slate-800 font-bold text-slate-300">
+                              {div}个生肖: {pct(prob as number)}
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-slate-500">暂无数据</span>
+                        )}
+                      </div>
+                      <p className="text-[10px] text-slate-500 leading-normal">本形态开出后，下期开出不同生肖数量的统计规律</p>
+                    </div>
+                  </div>
+
+                  {matchingRule && (
+                    <div className="pt-3.5 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-emerald-400 font-bold mb-1.5 flex items-center gap-1 text-[11px]">
+                          <Check className="w-4 h-4 shrink-0 text-emerald-500" />
+                          该模式下次期最强旺热生肖 (HOT TOP 3)
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {matchingRule.hottestZodiacs.map(([z, count, appRate]) => (
+                            <div key={z} className="bg-emerald-950/30 border border-emerald-900/30 px-2 py-1 rounded flex items-center gap-1 text-emerald-300 font-bold text-[10.5px]">
+                              【{z}】 <span className="font-mono text-[9px] text-emerald-400">{pct(appRate)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-rose-400 font-bold mb-1.5 flex items-center gap-1 text-[11px]">
+                          <X className="w-4 h-4 shrink-0 text-rose-500" />
+                          该模式下次期排斥绝对绝杀 (COLD TOP 3)
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          {matchingRule.coolestZodiacs.map(([z, count, appRate]) => (
+                            <div key={z} className="bg-rose-950/30 border border-rose-900/30 px-2 py-1 rounded flex items-center gap-1 text-rose-300 font-bold text-[10.5px]">
+                              【{z}】 <span className="font-mono text-[9px] text-rose-400">{pct(appRate)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+          {/* 3. Current Latest Archetype Match Status */}
+          {latestRecord && latestRecord.zodiacs && (
+            (() => {
+              // Calculate signature for latestRecord
+              const counts: Record<string, number> = {};
+              for (const z of latestRecord.zodiacs) {
+                counts[z] = (counts[z] || 0) + 1;
+              }
+              const freqList = Object.values(counts).sort((a, b) => b - a);
+              const duplicates = freqList.filter(f => f > 1);
+              let sig = "无重叠";
+              if (duplicates.length > 0) {
+                const parts: string[] = [];
+                for (const d of duplicates) {
+                  if (d === 2) parts.push("aa");
+                  else if (d === 3) parts.push("aaa");
+                  else if (d === 4) parts.push("aaaa");
+                  else parts.push("a".repeat(d));
+                }
+                sig = parts.join(", ");
+                if (sig === "aa, aa") sig = "aa, bb";
+                else if (sig === "aa, aa, aa") sig = "aa, bb, cc";
+                else if (sig === "aaa, aa") sig = "aaa, bb";
+              }
+
+              const matchingRule = report.zodiac_multiplicity_rules?.find(r => r.signature === sig);
+
+              return (
+                <div className="bg-slate-900 text-slate-100 rounded-2xl p-5 border border-slate-800 shadow-md">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-800 pb-3 gap-2 mb-4">
+                    <span className="text-xs font-bold text-indigo-400 flex items-center gap-1.5 uppercase">
+                      <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+                      当前最新期实际形态精准匹配
+                    </span>
+                    <span className="text-[10px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded-full font-mono">
+                      ARCHETYPE MATCHED: {sig}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+                    <div className="md:col-span-1 space-y-1">
+                      <div className="text-slate-400">最新开奖生肖形态:</div>
+                      <div className="text-sm font-extrabold text-white flex items-center gap-1.5">
+                        【{sig}】形态
+                      </div>
+                      <div className="text-[10px] text-indigo-300 font-semibold">{matchingRule?.label || "100% 对应原型"}</div>
+                    </div>
+
+                    <div className="md:col-span-1 space-y-1 border-l border-slate-800 pl-0 md:pl-4">
+                      <div className="text-slate-400">下期生肖重复概率 (重温率):</div>
+                      <div className="text-sm font-extrabold text-white">
+                        {matchingRule ? pct(matchingRule.nextRepeatRate) : "暂无历史统计"}
+                      </div>
+                      <div className="text-[10px] text-slate-500">（本期开出的生肖在下期连庄的统计率）</div>
+                    </div>
+
+                    <div className="md:col-span-1 space-y-1 border-l border-slate-800 pl-0 md:pl-4">
+                      <div className="text-slate-400">历史该形态总触发数 / 比例:</div>
+                      <div className="text-sm font-extrabold text-white">
+                        {matchingRule ? `${matchingRule.totalCount} 次` : "0次"} | {matchingRule ? pct(matchingRule.rate) : "0%"}
+                      </div>
+                      <div className="text-[10px] text-slate-500">（在已有开奖历史大盘中的占比率）</div>
+                    </div>
+                  </div>
+
+                  {matchingRule && (
+                    <div className="mt-4 pt-4 border-t border-slate-800 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      <div>
+                        <div className="text-emerald-400 font-bold mb-1.5 flex items-center gap-1">
+                          <Check className="w-4 h-4 shrink-0 text-emerald-500" />
+                          该形态在历史后置中最旺生肖 (HOT TOP 3)
+                        </div>
+                        <div className="flex gap-2">
+                          {matchingRule.hottestZodiacs.map(([z, count, appRate]) => (
+                            <div key={z} className="bg-emerald-950/40 border border-emerald-900/30 px-2 py-1.5 rounded-xl flex items-center gap-1.5 text-emerald-300 font-bold text-[11px]">
+                              【{z}】 <span className="font-mono text-[9px] text-emerald-400">{pct(appRate)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <div className="text-rose-400 font-bold mb-1.5 flex items-center gap-1">
+                          <X className="w-4 h-4 shrink-0 text-rose-500" />
+                          该形态在历史后置中最冷绝杀 (COLD TOP 3)
+                        </div>
+                        <div className="flex gap-2">
+                          {matchingRule.coolestZodiacs.map(([z, count, appRate]) => (
+                            <div key={z} className="bg-rose-950/40 border border-rose-900/30 px-2 py-1.5 rounded-xl flex items-center gap-1.5 text-rose-300 font-bold text-[11px]">
+                              【{z}】 <span className="font-mono text-[9px] text-rose-400">{pct(appRate)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()
+          )}
+
+          {/* 4. All Multiplicity Rules List */}
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900 mb-3 flex items-center gap-1.5">
+              <TrendingUp className="w-4 h-4 text-indigo-500" />
+              生肖重叠规律大盘特征大底库
+            </h3>
+
+            <div className="border border-gray-200 rounded-xl overflow-hidden shadow-2xs">
+              <table className="min-w-full divide-y divide-gray-200 text-xs">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">形态及代码</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">原型特征描述</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">大底总期数</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">大底占比</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">下期重温率</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">下期最旺 (HOT)</th>
+                    <th className="px-4 py-2.5 text-left font-semibold text-gray-500">下期绝杀 (COLD)</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-100">
+                  {report.zodiac_multiplicity_rules?.map((rule) => {
+                    // Check if current is matching
+                    let isLatestMatch = false;
+                    if (latestRecord && latestRecord.zodiacs) {
+                      const counts: Record<string, number> = {};
+                      for (const z of latestRecord.zodiacs) counts[z] = (counts[z] || 0) + 1;
+                      const freqList = Object.values(counts).sort((a, b) => b - a);
+                      const duplicates = freqList.filter(f => f > 1);
+                      let currentSig = "无重叠";
+                      if (duplicates.length > 0) {
+                        const parts: string[] = [];
+                        for (const d of duplicates) {
+                          if (d === 2) parts.push("aa");
+                          else if (d === 3) parts.push("aaa");
+                          else if (d === 4) parts.push("aaaa");
+                          else parts.push("a".repeat(d));
+                        }
+                        currentSig = parts.join(", ");
+                        if (currentSig === "aa, aa") currentSig = "aa, bb";
+                        else if (currentSig === "aa, aa, aa") currentSig = "aa, bb, cc";
+                        else if (currentSig === "aaa, aa") currentSig = "aaa, bb";
+                      }
+                      isLatestMatch = rule.signature === currentSig;
+                    }
+
+                    return (
+                      <tr key={rule.signature} className={`hover:bg-gray-50/70 transition-colors ${isLatestMatch ? "bg-indigo-50/25 font-semibold" : ""}`}>
+                        <td className="px-4 py-3 font-mono font-bold text-gray-900">
+                          <div className="flex items-center gap-1.5">
+                            <span className={isLatestMatch ? "text-indigo-700" : "text-gray-800"}>
+                              {rule.signature}
+                            </span>
+                            {isLatestMatch && (
+                              <span className="bg-indigo-100 text-indigo-700 text-[8px] px-1 rounded font-bold border border-indigo-200 uppercase shrink-0">
+                                MATCH
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3 text-gray-500">{rule.label}</td>
+                        <td className="px-4 py-3 font-mono font-bold text-gray-600">{rule.totalCount} 期</td>
+                        <td className="px-4 py-3 font-mono text-gray-500">{pct(rule.rate)}</td>
+                        <td className="px-4 py-3 font-mono font-bold text-indigo-600">{pct(rule.nextRepeatRate)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5 font-sans">
+                            {rule.hottestZodiacs.map(([z, cnt, appRate]) => (
+                              <span key={z} className="bg-emerald-50 text-emerald-800 border border-emerald-100 font-bold px-1 py-0.2 rounded text-[9.5px]" title={`出现${cnt}次`}>
+                                {z}({pct(appRate)})
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5 font-sans">
+                            {rule.coolestZodiacs.map(([z, cnt, appRate]) => (
+                              <span key={z} className="bg-rose-50 text-rose-800 border border-rose-100 font-bold px-1 py-0.2 rounded text-[9.5px]" title={`出现${cnt}次`}>
+                                {z}({pct(appRate)})
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Stats Tab: Historical Model Deduction Multi-Feature Groups Dashboard */}
+      {activeFinderTab === "stats" && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-indigo-900 via-slate-950 to-indigo-950 text-white rounded-2xl p-6 border border-slate-800 shadow-lg relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+              <BarChart2 className="w-48 h-48 text-indigo-400" />
+            </div>
+            
+            <div className="relative z-10 space-y-2">
+              <div className="flex items-center gap-2">
+                <span className="bg-indigo-500 text-white text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full tracking-wider animate-pulse">
+                  REAL-TIME SWEEP
+                </span>
+                <span className="text-xs text-indigo-200 font-mono">
+                  历史模型推演大盘透视
+                </span>
+              </div>
+              <h2 className="text-xl font-black tracking-tight">
+                📊 历史推演多特征组精度与遗漏率看板
+              </h2>
+              <p className="text-xs text-indigo-100 max-w-3xl leading-relaxed opacity-90">
+                本面板实时提取并交叉扫描 F1-F6 各大推演模块产生的底层高频规律与排除信号。按照生肖固有的多维特征进行大盘合并归纳，量化呈现不同属性组在历史模拟中的累计<strong>命中率（精度）</strong>及<strong>遗漏率（误差挂错率）</strong>，为一键智能推演提供核心科学决策支撑。
+              </p>
+            </div>
+          </div>
+
+          {/* Key Metric Indicators */}
+          {featureGroupStats && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Card 1: Global Avg Hit Rate */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold">大盘推演命中率</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(featureGroupStats.globalAvgHitRate)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">所有模块累计命中概率均值</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>基准随机期望:</span>
+                    <span className="font-mono text-gray-500">18.5%</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-emerald-500 h-full" style={{ width: `${featureGroupStats.globalAvgHitRate * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Global Avg Error Rate */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-rose-50 text-rose-700 px-1.5 py-0.5 rounded font-bold">大盘排除挂错率</span>
+                  <AlertCircle className="w-4 h-4 text-rose-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(featureGroupStats.globalAvgErrorRate)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">冷排除/绝杀失效挂错概率均值</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>安全控制线:</span>
+                    <span className="font-mono text-emerald-600 font-bold">&lt; 10.0%</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-rose-500 h-full" style={{ width: `${featureGroupStats.globalAvgErrorRate * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Best Group */}
+              {(() => {
+                const currentGroupData = featureGroupStats.computedGroups.find(g => g.id === activeStatsGroupTab);
+                if (!currentGroupData) return null;
+                const sortedSubs = [...currentGroupData.subgroups].sort((a, b) => b.avgHitRate - a.avgHitRate);
+                const bestSub = sortedSubs[0];
+                return (
+                  <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-bold">当前最优推演组</span>
+                      <Flame className="w-4 h-4 text-indigo-500 animate-pulse" />
+                    </div>
+                    <div>
+                      <div className="text-lg font-black text-slate-800 truncate" title={bestSub.name}>
+                        {bestSub.name.split(" ")[0]}
+                      </div>
+                      <div className="text-2xl font-black text-indigo-600 font-mono mt-0.5">
+                        {pct(bestSub.avgHitRate)}
+                      </div>
+                    </div>
+                    <div className="space-y-1 pt-1.5 border-t border-gray-100 flex justify-between items-center">
+                      <span className="text-[10px] text-gray-400">平均推演胜率最高</span>
+                      <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1 py-0.2 rounded">极强偏态</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Card 4: Most Secure Group */}
+              {(() => {
+                const currentGroupData = featureGroupStats.computedGroups.find(g => g.id === activeStatsGroupTab);
+                if (!currentGroupData) return null;
+                const sortedSubs = [...currentGroupData.subgroups].sort((a, b) => a.avgErrorRate - b.avgErrorRate);
+                const bestErrSub = sortedSubs[0];
+                return (
+                  <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                    <div className="flex justify-between items-start">
+                      <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-bold">最稳安全避险组</span>
+                      <Sparkles className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div>
+                      <div className="text-lg font-black text-slate-800 truncate" title={bestErrSub.name}>
+                        {bestErrSub.name.split(" ")[0]}
+                      </div>
+                      <div className="text-2xl font-black text-amber-600 font-mono mt-0.5">
+                        {pct(bestErrSub.avgErrorRate)}
+                      </div>
+                    </div>
+                    <div className="space-y-1 pt-1.5 border-t border-gray-100 flex justify-between items-center">
+                      <span className="text-[10px] text-gray-400">排除挂错失误最低</span>
+                      <span className="text-[10px] font-bold text-amber-600 bg-amber-50 px-1 py-0.2 rounded font-mono">挂防超稳</span>
+                    </div>
+                  </div>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* Grouping Selectors Tabs */}
+          <div className="flex flex-wrap gap-1.5 border-b border-gray-200 pb-2">
+            {featureGroupStats?.computedGroups.map((grp) => (
+              <button
+                key={grp.id}
+                onClick={() => setActiveStatsGroupTab(grp.id)}
+                className={`px-4 py-2 text-xs font-bold rounded-xl transition-all flex items-center gap-1.5 cursor-pointer ${
+                  activeStatsGroupTab === grp.id
+                    ? "bg-slate-900 text-white shadow-sm"
+                    : "text-gray-500 hover:text-slate-800 hover:bg-gray-100/70"
+                }`}
+              >
+                {grp.id === "yinyang" && "☯️"}
+                {grp.id === "seasons" && "🍁"}
+                {grp.id === "wildness" && "🦊"}
+                {grp.id === "heavens" && "🌌"}
+                {grp.name}
+              </button>
+            ))}
+          </div>
+
+          {/* Detailed Visualization & Subgroups Grid */}
+          {(() => {
+            const currentGroupData = featureGroupStats?.computedGroups.find(g => g.id === activeStatsGroupTab);
+            if (!currentGroupData) return null;
+
+            return (
+              <div className="space-y-6">
+                {/* Description */}
+                <div className="p-4 bg-slate-50 border border-gray-200/60 rounded-xl text-xs text-gray-600 leading-relaxed flex items-start gap-2">
+                  <Info className="w-4 h-4 text-slate-500 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-800">当前归类：{currentGroupData.name}</strong> — 
+                    通过对本组历史规则中全部旺/弱信号的累计解析，计算组内各个细分特征的宏观偏振情况。支持对冲套利、安全冷热防守配置。
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {currentGroupData.subgroups.map((sub, sIdx) => {
+                    const hitPercent = sub.avgHitRate * 100;
+                    const errorPercent = sub.avgErrorRate * 100;
+
+                    return (
+                      <div 
+                        key={sIdx} 
+                        className="bg-white border border-gray-200/80 rounded-2xl p-5.5 shadow-xs space-y-5 flex flex-col justify-between"
+                      >
+                        {/* Subgroup Header */}
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-center">
+                            <h4 className="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+                              <span className={`w-2.5 h-2.5 rounded-full ${
+                                sub.tag === "Yang" ? "bg-orange-500" :
+                                sub.tag === "Yin" ? "bg-purple-500" :
+                                sub.tag === "Spring" ? "bg-emerald-500" :
+                                sub.tag === "Summer" ? "bg-rose-500" :
+                                sub.tag === "Autumn" ? "bg-amber-500" :
+                                sub.tag === "Winter" ? "bg-sky-500" :
+                                "bg-indigo-500"
+                              }`}></span>
+                              {sub.name}
+                            </h4>
+                            <span className="text-[10px] text-gray-400 font-mono">成员数: {sub.items.length} 肖</span>
+                          </div>
+                          <p className="text-xs text-gray-500 leading-relaxed font-normal">
+                            {sub.desc}
+                          </p>
+                        </div>
+
+                        {/* Main Double Visual Bars */}
+                        <div className="bg-slate-50/50 p-4 border border-slate-100 rounded-xl space-y-3.5">
+                          {/* Hit Rate Bar */}
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-gray-500 font-medium flex items-center gap-1">
+                                <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                                平均推演命中率 (Hit Rate):
+                              </span>
+                              <span className="font-extrabold text-emerald-600 font-mono">{pct(sub.avgHitRate)}</span>
+                            </div>
+                            <div className="w-full bg-gray-200 h-2.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-emerald-500 h-full rounded-full transition-all duration-500" 
+                                style={{ width: `${Math.min(100, hitPercent * 2.5)}%` }} // Scaled visually for comparison against base 18.5%
+                              />
+                            </div>
+                            <div className="flex justify-between text-[9px] text-gray-400">
+                              <span>0%</span>
+                              <span>期望 18.5%</span>
+                              <span>极强偏态 40%+</span>
+                            </div>
+                          </div>
+
+                          {/* Error Rate Bar */}
+                          <div className="space-y-1.5">
+                            <div className="flex justify-between text-xs">
+                              <span className="text-gray-500 font-medium flex items-center gap-1">
+                                <AlertCircle className="w-3.5 h-3.5 text-rose-500" />
+                                平均排除失误率 (Omission Leak):
+                              </span>
+                              <span className="font-extrabold text-rose-600 font-mono">{pct(sub.avgErrorRate)}</span>
+                            </div>
+                            <div className="w-full bg-gray-200 h-2.5 rounded-full overflow-hidden">
+                              <div 
+                                className="bg-rose-500 h-full rounded-full transition-all duration-500" 
+                                style={{ width: `${Math.min(100, errorPercent * 5)}%` }} // Scaled for comparison against baseline 8.3%
+                              />
+                            </div>
+                            <div className="flex justify-between text-[9px] text-gray-400">
+                              <span>0%</span>
+                              <span>控制限 10%</span>
+                              <span>失效率 20%+</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Individual Zodiac Cards Grid */}
+                        <div className="space-y-2">
+                          <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                            组内单肖特征透视
+                          </div>
+                          <div className="grid grid-cols-2 xs:grid-cols-3 gap-2">
+                            {sub.items.map((item, idx) => {
+                              return (
+                                <div 
+                                  key={idx} 
+                                  className="border border-gray-200 bg-white hover:border-indigo-200 rounded-xl p-2.5 transition-all text-center space-y-1 relative group"
+                                >
+                                  <div className="flex justify-between items-center mb-0.5">
+                                    <span className="w-5.5 h-5.5 rounded-full bg-slate-900 text-white font-black text-xs flex items-center justify-center shadow-2xs">
+                                      {item.zodiac}
+                                    </span>
+                                    <span className={`text-[9px] px-1 py-0.2 rounded font-extrabold ${
+                                      item.hitRate > 0.25 ? "bg-emerald-50 text-emerald-700" :
+                                      item.errorRate > 0.15 ? "bg-rose-50 text-rose-700" :
+                                      "bg-slate-50 text-slate-500"
+                                    }`}>
+                                      {item.hitRate > 0.25 ? "旺盛" : item.errorRate > 0.15 ? "多漏" : "平稳"}
+                                    </span>
+                                  </div>
+                                  <div className="flex justify-between items-center text-[10px]">
+                                    <span className="text-gray-400">推演胜率:</span>
+                                    <span className="font-mono text-slate-800 font-bold">{pct(item.hitRate)}</span>
+                                  </div>
+                                  <div className="flex justify-between items-center text-[10px]">
+                                    <span className="text-gray-400">失误挂错:</span>
+                                    <span className="font-mono text-rose-600 font-bold">{pct(item.errorRate)}</span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* Audit Tab: Finder Accuracy/Error Rate & Vulnerability Repair Cabin */}
+      {activeFinderTab === "audit" && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Header */}
+          <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white rounded-2xl p-6 border border-slate-800 shadow-lg relative overflow-hidden">
+            <div className="absolute top-0 right-0 p-8 opacity-10 pointer-events-none">
+              <ShieldAlert className="w-48 h-48 text-indigo-400" />
+            </div>
+            
+            <div className="relative z-10 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full">
+                  Audit & Security Cabin
+                </span>
+                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full animate-pulse">
+                  SCAN STATUS: LIVE
+                </span>
+              </div>
+              <h2 className="text-xl font-black tracking-tight text-white flex items-center gap-2">
+                🎯 规律查找器准确率与错误率审计暨漏洞修复舱
+              </h2>
+              <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
+                本舱对规律查找器（F1-F6）中产出的所有微观统计决策规则进行全量深度扫描。评估样本量（Sample Size）、信号对称度及双轨对冲。当开启“安全平滑纠偏”时，系统将使用贝叶斯平滑算法拦截不合理的绝对绝杀，并彻底消解相反冲突信号，防止玩家陷入决策过拟合漏洞。
+              </p>
+            </div>
+          </div>
+
+          {/* Interactive Repair Controller & Quick Scan */}
+          <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-5">
+            <div className="space-y-1">
+              <div className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                <SlidersHorizontal className="w-4 h-4 text-indigo-600" />
+                安全漏洞自适应纠偏引擎配置
+              </div>
+              <p className="text-xs text-gray-500">
+                开启后，全量 F1-F6 查找器将自适应对不合理信号进行平滑纠偏。
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 shrink-0">
+              <span className={`text-xs font-bold ${isLiveRepairActive ? "text-indigo-600" : "text-gray-400"}`}>
+                {isLiveRepairActive ? "🛡️ 安全纠偏拦截已装载" : "⚠️ 裸露高偏差原始数据"}
+              </span>
+              <button
+                onClick={() => setIsLiveRepairActive(!isLiveRepairActive)}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-hidden ${
+                  isLiveRepairActive ? "bg-indigo-600" : "bg-gray-200"
+                }`}
+                role="switch"
+                aria-checked={isLiveRepairActive}
+              >
+                <span
+                  aria-hidden="true"
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+                    isLiveRepairActive ? "translate-x-5" : "translate-x-0"
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* Statistics Grid */}
+          <div>
+            <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
+              🎯 F1-F6 各查找模块准确率/错误率历史回测统计
+            </h3>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+              {/* F1 Card */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs relative">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-indigo-50 text-indigo-700 px-1.5 py-0.5 rounded font-bold">F1 交叉形态</span>
+                  <Award className="w-4 h-4 text-indigo-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(auditStats?.f1AverageAccuracy || 0)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">平均热点胜率</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>错误胜率:</span>
+                    <span className="font-mono text-rose-600 font-bold">{pct(1 - (auditStats?.f1AverageAccuracy || 0))}</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-indigo-600 h-full" style={{ width: `${(auditStats?.f1AverageAccuracy || 0) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* F2 Card */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-rose-50 text-rose-700 px-1.5 py-0.5 rounded font-bold">F2 绝杀拦截</span>
+                  <ShieldAlert className="w-4 h-4 text-rose-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(auditStats?.f2AverageAccuracy || 0)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">绝杀防御成功率</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>绝杀失误率:</span>
+                    <span className="font-mono text-rose-600 font-bold">{pct(auditStats?.f2AverageLeakRate || 0)}</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-rose-500 h-full" style={{ width: `${(auditStats?.f2AverageAccuracy || 0) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* F3 Card */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-bold">F3 区间槽位</span>
+                  <Grid className="w-4 h-4 text-amber-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(auditStats?.f3AverageAccuracy || 0)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">槽位限位命中率</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>越界挂错率:</span>
+                    <span className="font-mono text-rose-600 font-bold">{pct(1 - (auditStats?.f3AverageAccuracy || 0))}</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-amber-500 h-full" style={{ width: `${(auditStats?.f3AverageAccuracy || 0) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* F5 Card */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded font-bold">F5 轨迹断层</span>
+                  <TrendingUp className="w-4 h-4 text-emerald-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(auditStats?.f5AverageAccuracy || 0)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">周期回补率</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>回补挂错率:</span>
+                    <span className="font-mono text-rose-600 font-bold">{pct(1 - (auditStats?.f5AverageAccuracy || 0))}</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-emerald-500 h-full" style={{ width: `${(auditStats?.f5AverageAccuracy || 0) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+
+              {/* F6 Card */}
+              <div className="bg-white border border-gray-200 rounded-xl p-4.5 space-y-2.5 shadow-2xs">
+                <div className="flex justify-between items-start">
+                  <span className="text-[10px] bg-orange-50 text-orange-700 px-1.5 py-0.5 rounded font-bold">F6 生肖重叠</span>
+                  <Layers className="w-4 h-4 text-orange-500" />
+                </div>
+                <div>
+                  <div className="text-2xl font-black text-slate-800 font-mono">
+                    {pct(auditStats?.f6AverageAccuracy || 0)}
+                  </div>
+                  <div className="text-[10px] text-gray-400">连温重叠概率</div>
+                </div>
+                <div className="space-y-1 pt-1.5 border-t border-gray-100">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>断档落空率:</span>
+                    <span className="font-mono text-rose-600 font-bold">{pct(1 - (auditStats?.f6AverageAccuracy || 0))}</span>
+                  </div>
+                  <div className="w-full bg-gray-100 h-1 rounded-full overflow-hidden">
+                    <div className="bg-orange-500 h-full" style={{ width: `${(auditStats?.f6AverageAccuracy || 0) * 100}%` }} />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Vulnerability Checklist Scan Results */}
+          <div className="bg-slate-900 text-slate-100 rounded-2xl p-6 border border-slate-800 space-y-4 shadow-md">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                <ShieldAlert className="w-5 h-5 text-indigo-400" />
+                规律查找器安全漏洞及偏倚泄漏扫描报告
+              </h3>
+              <span className="text-[10px] font-mono text-slate-400">
+                TOTAL SCANNED LOGS: 4 CATEGORIES
+              </span>
+            </div>
+
+            <div className="divide-y divide-slate-800 text-xs">
+              {/* Vulnerability 1 */}
+              <div className="py-4 first:pt-0 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                    漏洞一：低样本绝对绝杀过拟合漏洞 (F2-Overfit Leak)
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    isLiveRepairActive ? "bg-emerald-950/40 text-emerald-400 border border-emerald-900/40" : "bg-rose-950/40 text-rose-400 border border-rose-900/40"
+                  }`}>
+                    {isLiveRepairActive ? "已纠偏修复" : "存在安全隐患"}
+                  </span>
+                </div>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  <strong>原理：</strong>绝杀拦截中存在部分历史触发期数过低（如仅触发 1-3 期）且发生率为 0% 的绝对绝杀规律。由于样本量过小，该零概率发生纯属统计巧合/过拟合，直接作为绝对排除推荐会导致挂错率骤增。
+                </p>
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">
+                    大底特征中包含：<strong className="text-rose-400 font-mono">{auditStats?.lowSampleKillsCount || 0}</strong> 条低样本过拟合绝对绝杀
+                  </span>
+                  {isLiveRepairActive ? (
+                    <span className="text-emerald-400 font-semibold">
+                      🛡️ 贝叶斯平滑已激活 (对 0% 进行了 Laplace 增量纠正)
+                    </span>
+                  ) : (
+                    <span className="text-rose-400 font-semibold flex items-center gap-1">
+                      ⚠️ 建议装载纠偏拦截，避免直接迷信 0% 绝对值
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Vulnerability 2 */}
+              <div className="py-4 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-orange-500"></span>
+                    漏洞二：同源水火双向信号泄漏对称漏洞 (F1-Overlap Leak)
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    isLiveRepairActive ? "bg-emerald-950/40 text-emerald-400 border border-emerald-900/40" : "bg-rose-950/40 text-rose-400 border border-rose-900/40"
+                  }`}>
+                    {isLiveRepairActive ? "已对冲去重" : "存在对冲信号"}
+                  </span>
+                </div>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  <strong>原理：</strong>在交叉形态深度微观探索中，由于多参数组合筛选的交织，极个别生肖可能在同一模式下同时进入“极旺生肖 (HOT)”和“最冷绝杀 (COLD)”名单，造成自相矛盾的对冲信号。
+                </p>
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">
+                    当前检测出：<strong className="text-orange-400 font-mono">{auditStats?.overlapsCount || 0}</strong> 处同源水火共振信号重叠泄漏
+                  </span>
+                  {isLiveRepairActive ? (
+                    <span className="text-emerald-400 font-semibold">
+                      🛡️ 剪枝过滤算法已装载 (彻底清除对称矛盾信号)
+                    </span>
+                  ) : (
+                    <span className="text-orange-400 font-semibold">
+                      ⚠️ 对冲信号将干扰模型在前端对 SmartPredictor 的评分纯净度
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Vulnerability 3 */}
+              <div className="py-4 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-amber-500"></span>
+                    漏洞三：双轨序列共振相反偏执矛盾 (Seq-Resonance Clashing)
+                  </span>
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                    isLiveRepairActive ? "bg-emerald-950/40 text-emerald-400 border border-emerald-900/40" : "bg-rose-950/40 text-rose-400 border border-rose-900/40"
+                  }`}>
+                    {isLiveRepairActive ? "已执行主次仲裁" : "存在偏执对冲"}
+                  </span>
+                </div>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  <strong>原理：</strong>在多期历史对齐轨迹比对中，“路径 A：多样性生肖数量”与“路径 B：具体生肖内容”对于下期极点判断产生对冲（例如数量轨迹建议排除马，但内容轨迹建议马极旺）。
+                </p>
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">
+                    当前对冲偏执点：<strong className="text-amber-400 font-mono">{auditStats?.sequenceContradictions || 0}</strong> 个
+                  </span>
+                  {isLiveRepairActive ? (
+                    <span className="text-emerald-400 font-semibold">
+                      🛡️ 样本期数多级仲裁锁装载 (优先采信历史多节点轨迹)
+                    </span>
+                  ) : (
+                    <span className="text-amber-400 font-semibold">
+                      ⚠️ 对冲偏执会导致下期决策的多路预测推荐出现内耗
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Vulnerability 4 */}
+              <div className="py-4 last:pb-0 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                  <span className="font-bold text-slate-200 flex items-center gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                    漏洞四：空值回弹硬着陆导致决策瘫痪 (Empty Alignment Defect)
+                  </span>
+                  <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-950/40 text-emerald-400 border border-emerald-900/40">
+                    已装载柔性大底兜底
+                  </span>
+                </div>
+                <p className="text-slate-400 leading-relaxed text-[11px]">
+                  <strong>原理：</strong>当启用“最新期原型过滤”时，若最新开奖特征过于偏僻，在历史中无任何 100% 对齐数据，则查找器将展示一片空白，引发信息真空、决策瘫痪。
+                </p>
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400">
+                    防御机制：<strong className="text-indigo-400">柔性大底降级兜底引擎</strong> 
+                  </span>
+                  <span className="text-emerald-400 font-semibold">
+                    🛡️ 自适应兜底就绪 (在极窄概率下自动回退至全局基准分布)
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+

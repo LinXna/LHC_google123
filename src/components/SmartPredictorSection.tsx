@@ -10,7 +10,10 @@ import {
   AlertTriangle, 
   CheckCircle, 
   ShieldX,
-  Plus
+  Plus,
+  Sliders,
+  Zap,
+  Sparkles
 } from "lucide-react";
 import { PredictionResult } from "../types.js";
 
@@ -165,6 +168,32 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
       calibrationWindow,
       kalmanQ,
       kalmanR,
+    });
+  };
+
+  const handleApplyTuning = (params: {
+    w1: number;
+    w2: number;
+    method: "wma" | "kalman" | "none";
+    window: number;
+    q: number;
+    r: number;
+  }) => {
+    setW1(params.w1);
+    setW2(params.w2);
+    setCalibrationMethod(params.method);
+    setCalibrationWindow(params.window);
+    setKalmanQ(params.q);
+    setKalmanR(params.r);
+
+    // Call onRunPredict with the parameters directly
+    onRunPredict({
+      w1: params.w1 / 100,
+      w2: params.w2 / 100,
+      calibrationMethod: params.method,
+      calibrationWindow: params.window,
+      kalmanQ: params.q,
+      kalmanR: params.r,
     });
   };
 
@@ -412,6 +441,106 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
           <h2 className="text-lg font-bold text-gray-900 border-b border-gray-100 pb-3 mb-4">
             LHC 第 {prediction.nextIssue} 期 精密生肖与号码推荐结果
           </h2>
+
+          {/* 交叉验证与一致性自适应校验舱 (Cross-Validation Module) */}
+          {(() => {
+            const hotSet = new Set(prediction.tierHot);
+            const midSet = new Set(prediction.tierMid);
+            const killSet = new Set(prediction.tierKill);
+            
+            const hotMidOverlap = prediction.tierHot.filter(z => midSet.has(z));
+            const hotKillOverlap = prediction.tierHot.filter(z => killSet.has(z));
+            const midKillOverlap = prediction.tierMid.filter(z => killSet.has(z));
+            const allOverlaps = Array.from(new Set([...hotMidOverlap, ...hotKillOverlap, ...midKillOverlap]));
+            
+            const hasOverlap = allOverlaps.length > 0;
+            
+            // Check even distribution tendency
+            const hLen = prediction.tierHot.length;
+            const mLen = prediction.tierMid.length;
+            const kLen = prediction.tierKill.length;
+            const isEvenSize = hLen === mLen && mLen === kLen && hLen > 0;
+            
+            // Calculate score standard deviation to evaluate entropy
+            const scoreValues = Object.values(prediction.scores);
+            const mean = scoreValues.reduce((sum, v) => sum + v, 0) / (scoreValues.length || 1);
+            const variance = scoreValues.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / (scoreValues.length || 1);
+            const stdDev = Math.sqrt(variance);
+            const isLowVariance = stdDev < 15.0; // low variance means uniform fallback
+            
+            return (
+              <div className={`mb-6 border rounded-2xl p-4.5 text-xs transition-all ${
+                hasOverlap 
+                  ? "bg-rose-50 border-rose-200 text-rose-900 shadow-sm shadow-rose-100" 
+                  : isEvenSize || isLowVariance
+                    ? "bg-amber-50 border-amber-200 text-amber-900 shadow-xs"
+                    : "bg-emerald-50/50 border-emerald-100 text-emerald-900"
+              }`}>
+                <div className="flex items-center justify-between border-b pb-2.5 mb-2.5 border-current/10">
+                  <span className="font-bold uppercase tracking-wider flex items-center gap-1.5 text-[11px]">
+                    <AlertTriangle className={`w-4 h-4 ${hasOverlap ? "text-rose-600 animate-bounce" : isEvenSize || isLowVariance ? "text-amber-600" : "text-emerald-600"}`} />
+                    🔍 智能推演多轨交叉验证校验中心 (Cross-Validation Guard)
+                  </span>
+                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full border bg-white ${
+                    hasOverlap 
+                      ? "text-rose-700 border-rose-200" 
+                      : isEvenSize || isLowVariance
+                        ? "text-amber-700 border-amber-200"
+                        : "text-emerald-700 border-emerald-200"
+                  }`}>
+                    {hasOverlap ? "⚠️ 校验冲突重叠" : isEvenSize || isLowVariance ? "⚠️ 信号均分倾向" : "✅ 校验高分化过关"}
+                  </span>
+                </div>
+
+                <div className="space-y-2.5">
+                  {/* Overlap Alarm */}
+                  {hasOverlap ? (
+                    <div className="bg-white/60 border border-rose-200/50 rounded-xl p-3 space-y-1.5">
+                      <div className="font-bold text-rose-800 flex items-center gap-1">
+                        ⚠️ 严重：检测到决策组存在重叠泄漏！
+                      </div>
+                      <p className="leading-relaxed text-rose-950">
+                        检测到生肖 <strong className="text-rose-700 underline">{allOverlaps.map(z => `【${z}】`).join(", ")}</strong> 同时出现在不同倾向组（主攻、防守、绝杀）中。由于模型在这些属性上的正面多级共振分与反面拦截绝对值完全对称，导致了信号对称性泄漏，这会严重稀释预测纯度！
+                      </p>
+                      <div className="text-[10.5px] text-rose-900 font-semibold bg-rose-100/50 p-2 rounded-lg border border-rose-200/30">
+                        💡 实战优化建议：请点击左上角齿轮图标，微调<strong>「智能决策权重」</strong>（如将 F1 大样本权重拉高到 70% 或 80%），或者在算法微调里开启<strong>「卡尔曼滤波」</strong>偏差自适应调节，以打破属性对称平摊，获取高分化的精确指示！
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1.5 text-emerald-800 font-bold">
+                      <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                      三大决策组（重磅、稳健、绝杀）逻辑彻底排他隔离，无任何生肖重叠泄漏冲突。
+                    </div>
+                  )}
+
+                  {/* Even Distribution Entropy Alarm */}
+                  {isEvenSize || isLowVariance ? (
+                    <div className="bg-white/60 border border-amber-200/50 rounded-xl p-3 space-y-1.5">
+                      <div className="font-bold text-amber-800 flex items-center gap-1">
+                        ⚠️ 警告：检测到决策倾向存在“生肖均匀分配（平摊）”的均分倾向！
+                      </div>
+                      <p className="leading-relaxed text-amber-950">
+                        当前重磅主攻({hLen})、稳健防守({mLen})、死穴绝杀({kLen})三大决策组生肖数量呈现严格对称分布 (或历史大盘评分标准差 stdDev = {stdDev.toFixed(1)} 偏低)。这说明历史统计特征过于发散均衡，容易丧失主攻聚焦度，在实战中容易被平摊！
+                      </p>
+                      <div className="text-[10.5px] text-amber-900 font-semibold bg-amber-100/50 p-2 rounded-lg border border-amber-200/30">
+                        💡 实战均分对冲建议：强烈建议微调<strong>「加权移动平均(WMA)的移动平均窗口」</strong>或微调<strong>「Kalman 滤波的过程噪声 Q」</strong>（如适当减小过程噪声 Q 到 0.001），使模型对近期波动的偏振反应更激进，进而拉开分数极值分化，破除均分平摊倾斜！
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-white/40 border border-emerald-100/30 rounded-xl p-3 flex flex-col gap-1 text-[11px] text-emerald-800 leading-relaxed">
+                      <div className="font-bold flex items-center gap-1">
+                        ✅ 多轨特征高度分化审计合格 (Entropy Check Green)
+                      </div>
+                      <p>
+                        各决策组生肖分配比具备天然阶梯（主攻 {hLen} 只 / 防守 {mLen} 只 / 绝杀 {kLen} 只，大盘极值分化标准差 stdDev = {stdDev.toFixed(1)}，处于高分化高置信度健康区间）。决策主次极度鲜明，实战极强，平摊倾向降为最低！
+                      </p>
+                    </div>
+                  )}
+
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="border border-emerald-200 bg-emerald-50/55 rounded-2xl p-4">

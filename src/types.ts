@@ -133,6 +133,18 @@ export interface AnalyzerReport {
     zodiac_resonance: SequentialMatchItem[];
   };
   special_zodiac_bias?: SpecialZodiacBiasRecord[];
+  zodiac_multiplicity_rules?: ZodiacMultiplicityRule[];
+}
+
+export interface ZodiacMultiplicityRule {
+  signature: string;
+  label: string;
+  totalCount: number;
+  rate: number;
+  nextDiversityDistribution: Record<number, number>;
+  nextRepeatRate: number;
+  hottestZodiacs: [string, number, number][]; // [zodiac, count, percentage]
+  coolestZodiacs: [string, number, number][]; // [zodiac, count, percentage]
 }
 
 export interface SpecialZodiacBiasRecord {
