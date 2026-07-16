@@ -23,12 +23,12 @@ function App() {
   // Pending settings - edited by user in UI but NOT yet applied for computation
   const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [baseZodiac, setBaseZodiac] = useState<string>("马");
-  const [engineMode, setEngineMode] = useState<"unified" | "dynamic">("unified");
+  const [engineMode, setEngineMode] = useState<"unified" | "dynamic">("dynamic");
 
   // Applied/Active settings - used for backend API requests and reports display
   const [appliedYears, setAppliedYears] = useState<string[]>([]);
   const [appliedBaseZodiac, setAppliedBaseZodiac] = useState<string>("马");
-  const [appliedEngineMode, setAppliedEngineMode] = useState<"unified" | "dynamic">("unified");
+  const [appliedEngineMode, setAppliedEngineMode] = useState<"unified" | "dynamic">("dynamic");
 
   const [loading, setLoading] = useState<boolean>(false);
   const [totalRecords, setTotalRecords] = useState<number>(0);
@@ -259,28 +259,52 @@ function App() {
               latestRecord={latestRecord}
             />
 
-            <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm">
-              <h2 className="text-base font-bold text-gray-900 mb-2">自动化智能推荐快捷发起</h2>
-              <p className="text-xs text-gray-500 mb-4 leading-relaxed">
-                无需手动审视高频规律，直接对冲当前最新大底指标，一键生成契合《zodiac_advanced_report.txt》的高精度推演建议与实战特码弹药配置。
-              </p>
-              <button
-                onClick={() => handleRunPrediction()}
-                disabled={loading || hasChanges}
-                className={`px-5 py-2.5 text-xs font-semibold rounded-xl shadow-xs transition-all flex items-center gap-1.5 cursor-pointer ${
-                  loading || hasChanges
-                    ? "bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed"
-                    : "bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md border border-indigo-600"
-                }`}
-              >
-                <Compass className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-                {hasChanges ? "请先点击上方“确认应用参数”重新计算" : "立即激活一键推演预测决策"}
-              </button>
-              {hasChanges && (
-                <p className="text-[11px] text-amber-600 font-semibold mt-2.5 flex items-center gap-1.5">
-                  ⚠️ 警告: 检测到数据源年份或引擎映射模式有变动，请先在上方点击<strong>“确认应用参数并重新计算”</strong>，完成计算后方可启用一键推演。
-                </p>
-              )}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900 mb-2">自动化智能推荐快捷发起</h2>
+                  <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                    无需手动审视高频规律，直接对冲当前最新大底指标，一键生成契合《zodiac_advanced_report.txt》的高精度推演建议与实战特码弹药配置。
+                  </p>
+                </div>
+                <div>
+                  <button
+                    onClick={() => handleRunPrediction()}
+                    disabled={loading || hasChanges}
+                    className={`w-full px-5 py-2.5 text-xs font-semibold rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      loading || hasChanges
+                        ? "bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed"
+                        : "bg-indigo-600 text-white hover:bg-indigo-700 hover:shadow-md border border-indigo-600"
+                    }`}
+                  >
+                    <Compass className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+                    {hasChanges ? "请先点击上方“确认应用参数并重新计算”" : "立即激活一键推演预测决策"}
+                  </button>
+                  {hasChanges && (
+                    <p className="text-[11px] text-amber-600 font-semibold mt-2.5 flex items-center gap-1.5">
+                      ⚠️ 警告: 请先点击上方“确认应用参数并重新计算”重新加载。
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
+                <div>
+                  <h2 className="text-base font-bold text-gray-900 mb-2">2026全年度真实命中诊断与穿透回测</h2>
+                  <p className="text-xs text-gray-500 mb-4 leading-relaxed">
+                    使用全部历史年份作为计算参数，对2026年已开奖的每一期进行严密回溯仿真，审计核心主攻与稳健防守的综合命中率，自动出具SWOT优势与局限性分析。
+                  </p>
+                </div>
+                <div>
+                  <button
+                    onClick={() => setActiveTab("simulator")}
+                    className="w-full px-5 py-2.5 text-xs font-semibold rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer bg-slate-900 hover:bg-slate-800 text-white border border-slate-900"
+                  >
+                    <History className="w-4 h-4 text-indigo-400" />
+                    进入“穿透回测”舱启动年度审计
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         )}

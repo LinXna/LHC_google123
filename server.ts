@@ -279,6 +279,164 @@ async function startServer() {
     }
   });
 
+  // 5. API: Run Batch Backtest for a specific year (e.g. 2026)
+  app.post("/api/backtest-year", (req, res) => {
+    try {
+      const { year = 2026, baseZodiac, engineMode = "dynamic", customWeights } = req.body;
+      const files = getAvailableDataFiles();
+      const targetFiles = files.map(f => path.join(DATA_DIR, f));
+
+      const mergedRecords: any[] = [];
+      for (const filePath of targetFiles) {
+        try {
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const payload = JSON.parse(raw);
+          const bodyList = payload.result?.data?.bodyList;
+          if (!Array.isArray(bodyList)) continue;
+
+          let fileYear = parseInt(path.basename(filePath).split(".")[0]) || 2026;
+          if (bodyList.length > 0 && bodyList[0].preDrawDate) {
+            fileYear = parseInt(bodyList[0].preDrawDate.slice(0, 4)) || fileYear;
+          }
+
+          const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
+          const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+
+          for (const r of yearRecords) {
+            r.archive_year = fileYear;
+            mergedRecords.push(r);
+          }
+        } catch (err) {}
+      }
+
+      mergedRecords.sort((a, b) => {
+        const yrA = a.archive_year || 0;
+        const yrB = b.archive_year || 0;
+        if (yrA !== yrB) return yrA - yrB;
+        return a.issue - b.issue;
+      });
+
+      // Filter target records of the specified year
+      const yearRecords = mergedRecords.filter(r => r.archive_year === year);
+      
+      if (yearRecords.length === 0) {
+        return res.status(400).json({ status: "error", message: `未找到 ${year} 年的历史数据` });
+      }
+
+      // Sort yearRecords ascending by issue
+      yearRecords.sort((a, b) => a.issue - b.issue);
+
+      const results: any[] = [];
+      let totalHotHits = 0;
+      let totalHotMatches = 0;
+      let totalMidHits = 0;
+      let totalMidMatches = 0;
+      let totalKillIntercepts = 0; // successfully cleared (no actual numbers drawn fall into kill tier)
+      let totalKillFails = 0; // kill tier zodiac drawn
+      let totalNumHits = 0;
+      let totalIssuesEvaluated = 0;
+
+      for (let i = 0; i < yearRecords.length; i++) {
+        const currentRecord = yearRecords[i];
+        const testIdx = mergedRecords.indexOf(currentRecord);
+        if (testIdx < ZodiacPatternAnalyzer.MIN_PERIODS) continue;
+
+        // Historical slice up to preceding issue
+        const historicalSlice = mergedRecords.slice(0, testIdx);
+        
+        const latestRecord = historicalSlice[historicalSlice.length - 1];
+        const latestYear = latestRecord.archive_year || 2026;
+        const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
+
+        const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode);
+        const report = analyzer.computePatterns(historicalSlice);
+        const prediction = ZodiacPatternAnalyzer.generatePrediction(historicalSlice, report, finalBaseZodiac, engineMode, customWeights);
+
+        // Check actual draw details of the predicted issue
+        const actualNums = currentRecord.numbers;
+        let activeMap = analyzer.zodiacMap;
+        if (engineMode === "dynamic" && currentRecord.archive_year !== undefined) {
+          const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
+          activeMap = analyzer._getZodiacMap(nextBase);
+        }
+        const actualZodiacs = actualNums.map(n => activeMap[n] || "未知");
+
+        const hotHits = tierMatchHits(prediction.tierHot, actualZodiacs);
+        const midHits = tierMatchHits(prediction.tierMid, actualZodiacs);
+        const killHits = tierMatchHits(prediction.tierKill, actualZodiacs);
+        const numHits = actualNums.filter(n => prediction.premiumHotNums.includes(n));
+
+        const hasHotHit = hotHits.length > 0;
+        const hasMidHit = midHits.length > 0;
+        const isPerfectKill = killHits.length === 0;
+
+        if (hasHotHit) {
+          totalHotHits++;
+          totalHotMatches += hotHits.reduce((sum, h) => sum + h.matches, 0);
+        }
+        if (hasMidHit) {
+          totalMidHits++;
+          totalMidMatches += midHits.reduce((sum, h) => sum + h.matches, 0);
+        }
+        if (isPerfectKill) {
+          totalKillIntercepts++;
+        } else {
+          totalKillFails++;
+        }
+        totalNumHits += numHits.length;
+        totalIssuesEvaluated++;
+
+        results.push({
+          issue: currentRecord.issue,
+          date: currentRecord.date,
+          actualNums,
+          actualZodiacs,
+          prediction: {
+            tierHot: prediction.tierHot,
+            tierMid: prediction.tierMid,
+            tierKill: prediction.tierKill,
+            premiumHotNums: prediction.premiumHotNums,
+            difficultyScore: prediction.difficultyScore,
+            conclusion: prediction.conclusion
+          },
+          metrics: {
+            hotHits,
+            midHits,
+            killHits,
+            numHits,
+            hasHotHit,
+            hasMidHit,
+            isPerfectKill
+          }
+        });
+      }
+
+      res.json({
+        status: "success",
+        year,
+        engineMode,
+        totalIssuesEvaluated,
+        summary: {
+          hotHitRate: totalIssuesEvaluated > 0 ? totalHotHits / totalIssuesEvaluated : 0,
+          hotHitCount: totalHotHits,
+          hotMatchesTotal: totalHotMatches,
+          midHitRate: totalIssuesEvaluated > 0 ? totalMidHits / totalIssuesEvaluated : 0,
+          midHitCount: totalMidHits,
+          midMatchesTotal: totalMidMatches,
+          killInterceptRate: totalIssuesEvaluated > 0 ? totalKillIntercepts / totalIssuesEvaluated : 0,
+          killInterceptCount: totalKillIntercepts,
+          killFailCount: totalKillFails,
+          numHitsTotal: totalNumHits,
+        },
+        results
+      });
+    } catch (e: any) {
+      console.error("Year backtest failed:", e);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
+
   function tierMatchHits(tier: string[], actualZodiacs: string[]): { zodiac: string, matches: number }[] {
     const hits: { zodiac: string, matches: number }[] = [];
     const counts: Record<string, number> = {};
