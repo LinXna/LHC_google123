@@ -190,4 +190,36 @@ export interface PredictionResult {
     r?: number;
     rates: Record<string, number>;
   };
+  benchmark?: {
+    testedCount: number;
+    baseline: {
+      hotHitRate: number;
+      midHitRate: number;
+      killInterceptRate: number;
+      weightedHitRate: number;
+      killFailCount: number;
+    };
+    current: {
+      hotHitRate: number;
+      midHitRate: number;
+      killInterceptRate: number;
+      weightedHitRate: number;
+      killFailCount: number;
+    };
+    gains: {
+      weightedHitRateGain: number;
+      hotHitRateGain: number;
+      killFailCountGain: number;
+    };
+    isDegraded: boolean;
+  };
+  killInterceptHistory?: Array<{
+    issue: number;
+    archive_year: number;
+    date: string;
+    killedZodiacs: string[];
+    actualZodiacs: string[];
+    leaks: string[];
+    success: boolean;
+  }>;
 }

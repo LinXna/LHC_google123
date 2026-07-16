@@ -13,7 +13,9 @@ import {
   Plus,
   Sliders,
   Zap,
-  Sparkles
+  Sparkles,
+  X,
+  ShieldAlert
 } from "lucide-react";
 import { PredictionResult } from "../types.js";
 
@@ -43,6 +45,11 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
   const [kalmanQ, setKalmanQ] = useState<number>(0.01);
   const [kalmanR, setKalmanR] = useState<number>(0.1);
   const [copied, setCopied] = useState<boolean>(false);
+  const [dismissAlert, setDismissAlert] = useState<boolean>(false);
+
+  useEffect(() => {
+    setDismissAlert(false);
+  }, [prediction]);
 
   useEffect(() => {
     if (prediction) {
@@ -210,8 +217,35 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
     return "bg-amber-500";
   };
 
+  const hasLeaksInHistory = prediction?.killInterceptHistory?.some(item => item.leaks && item.leaks.length > 0);
+
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+    <div className="relative">
+      {/* Floating Alert for Leaks in the last 10 periods */}
+      {hasLeaksInHistory && !dismissAlert && (
+        <div id="floating_leak_warning" className="fixed top-6 right-6 z-[100] max-w-sm w-[90%] bg-linear-to-r from-rose-50 to-red-100 border border-rose-200 rounded-2xl shadow-2xl p-4 flex gap-3 items-start animate-pulse">
+          <ShieldAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h4 className="text-xs font-extrabold text-rose-900 flex items-center gap-1">
+              ⚠️ 死穴绝杀重大漏杀警报！
+            </h4>
+            <p className="text-[10.5px] text-rose-800 leading-relaxed mt-1">
+              警告：最近 10 期实战回测中，部分被判定为<strong>【坚决清除】</strong>的绝杀生肖或号码在最终开奖中漏网跑出（出现漏杀）。
+            </p>
+            <div className="mt-2 text-[10px] font-semibold bg-rose-100 border border-rose-200 text-rose-950 px-2 py-0.5 rounded-lg inline-block">
+              💡 建议微调偏振权重或校准模式以消除漏防
+            </div>
+          </div>
+          <button 
+            onClick={() => setDismissAlert(true)}
+            className="p-1 hover:bg-rose-100 rounded-lg text-rose-700 transition-colors shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
       {/* Prediction Left: Stats, rating & advice */}
       <div className="xl:col-span-1 space-y-6">
         <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">
@@ -542,6 +576,142 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
             );
           })()}
 
+          {/* --- NEW: Benchmark Comparison & Quality Assurance Panel --- */}
+          {prediction.benchmark && (
+            <div id="benchmark_qa_panel" className="mb-6 border border-gray-200 rounded-2xl p-5 bg-linear-to-b from-gray-50/50 to-white/30 space-y-4">
+              <div className="flex items-center justify-between border-b border-gray-100 pb-3 flex-wrap gap-2">
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-indigo-600 animate-pulse" />
+                  <div>
+                    <h3 className="text-sm font-bold text-gray-800">📊 智能调参历史基准 Benchmark 科学质检对账单</h3>
+                    <p className="text-[10px] text-gray-400 mt-0.5">回溯评估最近 20 期历史开奖，对比【本次调参配置】与【历史基准配置】的实战拟合效能</p>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full border border-gray-200">
+                  评估样本数: {prediction.benchmark.testedCount} 期
+                </span>
+              </div>
+
+              {/* Error rate comparison table */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs border-collapse min-w-[500px]">
+                  <thead>
+                    <tr className="border-b border-gray-200 text-gray-400 text-[10px] uppercase font-bold tracking-wider">
+                      <th className="py-2">核心评估指标 (KPI)</th>
+                      <th className="py-2 text-center">历史默认基准 (Baseline)</th>
+                      <th className="py-2 text-center">本次调参配置 (Proposed)</th>
+                      <th className="py-2 text-center">科学质检偏振幅度</th>
+                      <th className="py-2 text-right">优化评估结论</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-50 text-gray-700">
+                    {/* 1. Weighted Hit Rate */}
+                    <tr className="hover:bg-gray-50/30">
+                      <td className="py-2.5 font-semibold text-gray-800">
+                        加权综合命中率 (Weighted Hit Rate)
+                        <span className="block text-[9px] text-gray-400 font-normal">权重配比: 主攻50% / 防守30% / 绝杀20%</span>
+                      </td>
+                      <td className="py-2.5 text-center font-mono text-gray-600">
+                        {(prediction.benchmark.baseline.weightedHitRate * 100).toFixed(1)}%
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.current.weightedHitRate >= prediction.benchmark.baseline.weightedHitRate ? "text-emerald-600" : "text-rose-600"}`}>
+                        {(prediction.benchmark.current.weightedHitRate * 100).toFixed(1)}%
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.gains.weightedHitRateGain >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {prediction.benchmark.gains.weightedHitRateGain >= 0 ? "+" : ""}{(prediction.benchmark.gains.weightedHitRateGain * 100).toFixed(1)}%
+                      </td>
+                      <td className="py-2.5 text-right font-medium">
+                        {prediction.benchmark.gains.weightedHitRateGain >= 0 ? (
+                          <span className="text-emerald-600 flex items-center justify-end gap-1 text-[11px]">
+                            <CheckCircle className="w-3.5 h-3.5" /> 正向拟合优化
+                          </span>
+                        ) : (
+                          <span className="text-rose-600 flex items-center justify-end gap-1 text-[11px] font-bold">
+                            <AlertTriangle className="w-3.5 h-3.5 animate-bounce" /> 逆向负优化 (误差增加)
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+
+                    {/* 2. Tier 1 Hit Rate */}
+                    <tr className="hover:bg-gray-50/30">
+                      <td className="py-2.5 font-semibold text-gray-800">
+                        重磅主攻命中率 (Tier 1 Hit Rate)
+                        <span className="block text-[9px] text-gray-400 font-normal">评估主攻生肖的平均推荐精确命中度</span>
+                      </td>
+                      <td className="py-2.5 text-center font-mono text-gray-600">
+                        {(prediction.benchmark.baseline.hotHitRate * 100).toFixed(1)}%
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.current.hotHitRate >= prediction.benchmark.baseline.hotHitRate ? "text-emerald-600" : "text-rose-600"}`}>
+                        {(prediction.benchmark.current.hotHitRate * 100).toFixed(1)}%
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.gains.hotHitRateGain >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {prediction.benchmark.gains.hotHitRateGain >= 0 ? "+" : ""}{(prediction.benchmark.gains.hotHitRateGain * 100).toFixed(1)}%
+                      </td>
+                      <td className="py-2.5 text-right font-medium">
+                        {prediction.benchmark.gains.hotHitRateGain >= 0 ? (
+                          <span className="text-emerald-600 text-[11px]">🟢 推荐浓度提升</span>
+                        ) : (
+                          <span className="text-rose-600 text-[11px] font-bold">🚨 推荐纯度稀释</span>
+                        )}
+                      </td>
+                    </tr>
+
+                    {/* 3. Tier 3 Fail Count */}
+                    <tr className="hover:bg-gray-50/30">
+                      <td className="py-2.5 font-semibold text-gray-800">
+                        绝杀绝对漏杀次数 (Tier 3 Fail Count)
+                        <span className="block text-[9px] text-gray-400 font-normal">死穴绝杀生肖开出的总期数（越少越优）</span>
+                      </td>
+                      <td className="py-2.5 text-center font-mono text-gray-600">
+                        {prediction.benchmark.baseline.killFailCount} 次漏杀
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.current.killFailCount <= prediction.benchmark.baseline.killFailCount ? "text-emerald-600" : "text-rose-600"}`}>
+                        {prediction.benchmark.current.killFailCount} 次漏杀
+                      </td>
+                      <td className={`py-2.5 text-center font-mono font-bold ${prediction.benchmark.gains.killFailCountGain >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                        {prediction.benchmark.gains.killFailCountGain > 0 ? `减少 ${prediction.benchmark.gains.killFailCountGain} 次` : prediction.benchmark.gains.killFailCountGain < 0 ? `增加 ${Math.abs(prediction.benchmark.gains.killFailCountGain)} 次` : "无变化"}
+                      </td>
+                      <td className="py-2.5 text-right font-medium">
+                        {prediction.benchmark.gains.killFailCountGain >= 0 ? (
+                          <span className="text-emerald-600 text-[11px]">🛡️ 安全防御过关</span>
+                        ) : (
+                          <span className="text-rose-600 text-[11px] font-bold">💀 防护盾漏穿透</span>
+                        )}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Alert Message for Degraded Parameters (高亮预警) */}
+              {prediction.benchmark.isDegraded ? (
+                <div className="bg-rose-50 border border-rose-200 rounded-xl p-4 flex gap-3 items-start animate-pulse">
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="text-xs font-bold text-rose-800">🚨 警告：参数配置引发模型拟合劣化（误差扩大）！</h4>
+                    <p className="text-[11px] text-rose-700 leading-relaxed mt-1">
+                      当前调优参数在测试集上的<strong>「加权综合命中率」</strong>或<strong>「主攻命中率」</strong>下滑，或者<strong>「绝杀漏杀次数增加」</strong>。根据系统硬性拦截阈值保护：
+                    </p>
+                    <div className="mt-2 text-[10.5px] font-semibold bg-rose-100 text-rose-950 p-2 rounded-lg border border-rose-200 inline-block">
+                      🚫 【一键熔断警告】不建议部署上线当前规则链配置，强烈建议恢复至默认基准配置。
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3.5 flex gap-2.5 items-center">
+                  <CheckCircle className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <div>
+                    <h4 className="text-xs font-bold text-emerald-800">✅ 质检合格：当前推荐算法与调参整体表现优于历史基准！</h4>
+                    <p className="text-[10.5px] text-emerald-700 mt-0.5">
+                      本次微调在测试样本中实现了正向增益，满足模型自适应安全上线条件（加权增益：{(prediction.benchmark.gains.weightedHitRateGain * 100).toFixed(1)}%）。
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="border border-emerald-200 bg-emerald-50/55 rounded-2xl p-4">
               <div className="text-[11px] text-emerald-800 font-bold uppercase tracking-wider flex items-center gap-1">
@@ -705,7 +875,101 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
             </div>
           </div>
         )}
+
+        {/* --- NEW: Tier 3 Kill/Exclusion Dedicated Radar Intercept Cockpit --- */}
+        {prediction.killInterceptHistory && (
+          <div id="kill_intercept_cockpit" className="border-t border-gray-100 pt-5 space-y-4">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">
+                <ShieldAlert className="w-4 h-4 text-rose-600 animate-pulse" />
+                🛡️ 主控审计舱「死穴绝杀」雷达拦截专设监控视图
+              </div>
+              <span className="text-[9px] font-mono bg-rose-50 text-rose-700 px-2 py-0.5 rounded-full border border-rose-200 font-semibold">
+                最近 10 期实战回测拦截跟踪
+              </span>
+            </div>
+
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              实时跟踪和对账过去 10 期，由系统<strong>「死穴绝杀高精密过滤器插件」</strong>标记的【100%坚决清除】生肖拦截质量。若出现由于历史极端偏振导致的漏杀（漏防），系统将立即高亮亮网警报。
+            </p>
+
+            <div className="overflow-hidden border border-gray-100 rounded-xl bg-gray-50/30">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[11px] border-collapse min-w-[500px]">
+                  <thead>
+                    <tr className="bg-gray-50 text-gray-500 font-bold uppercase tracking-wider border-b border-gray-100 text-[9px]">
+                      <th className="p-2.5">期数 / 录入日期</th>
+                      <th className="p-2.5">死穴绝杀拦截名册 (Tier 3)</th>
+                      <th className="p-2.5">实际开出生肖</th>
+                      <th className="p-2.5 text-center">拦截拦截率</th>
+                      <th className="p-2.5 text-right">对账核验状态</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 text-gray-700 bg-white">
+                    {prediction.killInterceptHistory.slice().reverse().map((item, idx) => {
+                      const hasLeak = item.leaks.length > 0;
+                      return (
+                        <tr key={idx} className={`hover:bg-gray-50/50 transition-colors ${hasLeak ? "bg-rose-50/30" : ""}`}>
+                          <td className="p-2.5 font-semibold text-gray-900">
+                            第 {item.issue} 期
+                            <span className="block text-[9px] text-gray-400 font-normal">{item.date}</span>
+                          </td>
+                          <td className="p-2.5">
+                            <div className="flex flex-wrap gap-1 max-w-[180px]">
+                              {item.killedZodiacs.map(z => (
+                                <span key={z} className="px-1.5 py-0.5 text-[9px] font-mono bg-rose-50 text-rose-700 border border-rose-100 rounded-sm">
+                                  {z}
+                                </span>
+                              ))}
+                            </div>
+                          </td>
+                          <td className="p-2.5">
+                            <div className="flex flex-wrap gap-1 max-w-[180px]">
+                              {item.actualZodiacs.slice(0, 7).map((z, sIdx) => {
+                                const isLeaked = item.leaks.includes(z);
+                                return (
+                                  <span key={sIdx} className={`px-1.5 py-0.5 text-[9px] rounded-sm font-semibold ${
+                                    isLeaked 
+                                      ? "bg-rose-600 text-white animate-pulse" 
+                                      : "bg-gray-100 text-gray-600 border border-gray-200"
+                                  }`}>
+                                    {z}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </td>
+                          <td className="p-2.5 text-center font-mono font-bold">
+                            {hasLeak ? (
+                              <span className="text-rose-600">
+                                {(((item.killedZodiacs.length - item.leaks.length) / item.killedZodiacs.length) * 100).toFixed(0)}%
+                              </span>
+                            ) : (
+                              <span className="text-emerald-600">100%</span>
+                            )}
+                          </td>
+                          <td className="p-2.5 text-right">
+                            {hasLeak ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 text-rose-800 border border-rose-200">
+                                🚨 出现漏杀: {item.leaks.map(z => `【${z}】`).join(", ")}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <Check className="w-3 h-3 text-emerald-600" /> 100% 完美拦截
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
+  </div>
   );
 };

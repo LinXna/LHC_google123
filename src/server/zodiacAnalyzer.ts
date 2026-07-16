@@ -29,14 +29,64 @@ export class ZodiacPatternAnalyzer {
   public zodiacOrder = ["马", "蛇", "龙", "兔", "虎", "牛", "鼠", "猪", "狗", "鸡", "猴", "羊"];
   public zodiacMap: Record<number, string>;
   public engineMode: "unified" | "dynamic" = "unified";
+  public freshnessEnabled: boolean = false;
+  public freshnessYears: number = 3;
   private _zodiacMapCache: Record<string, Record<number, string>> = {};
 
-  constructor(baseZodiac: string = "马", engineMode: "unified" | "dynamic" = "unified") {
+  constructor(
+    baseZodiac: string = "马", 
+    engineMode: "unified" | "dynamic" = "unified",
+    freshnessEnabled: boolean = false,
+    freshnessYears: number = 3
+  ) {
     if (!this.zodiacOrder.includes(baseZodiac)) {
       throw new Error(`无效本命肖: ${baseZodiac}，可选: ${this.zodiacOrder.join(", ")}`);
     }
     this.engineMode = engineMode;
     this.zodiacMap = this._getZodiacMap(baseZodiac);
+    this.freshnessEnabled = freshnessEnabled;
+    this.freshnessYears = freshnessYears;
+  }
+
+  public static resampleRecords(records: LotteryRecord[], freshnessYears: number): LotteryRecord[] {
+    if (records.length === 0) return [];
+    
+    // Find the latest archive_year to measure freshness difference
+    let latestYear = 2026;
+    for (const r of records) {
+      const yr = r.archive_year || (r.date ? parseInt(r.date.slice(0, 4)) : null);
+      if (yr && yr > latestYear) {
+        latestYear = yr;
+      }
+    }
+
+    const getDeterministicRandom = (issue: number) => {
+      const x = Math.sin(issue) * 10000;
+      return x - Math.floor(x);
+    };
+
+    const resampled: LotteryRecord[] = [];
+    for (const record of records) {
+      const yr = record.archive_year || (record.date ? parseInt(record.date.slice(0, 4)) : 2026);
+      const yearsDiff = latestYear - yr;
+      if (yearsDiff < freshnessYears) {
+        // Within X years: keep 100% of strong features
+        resampled.push(record);
+      } else {
+        // Older than X years: dynamically weaken (decay keep probability)
+        const yearsOver = yearsDiff - freshnessYears;
+        const keepProb = Math.max(0.15, Math.pow(0.5, yearsOver + 1));
+        if (getDeterministicRandom(record.issue) < keepProb) {
+          resampled.push(record);
+        }
+      }
+    }
+    return resampled;
+  }
+
+  public resampleIfEnabled(records: LotteryRecord[]): LotteryRecord[] {
+    if (!this.freshnessEnabled) return records;
+    return ZodiacPatternAnalyzer.resampleRecords(records, this.freshnessYears);
   }
 
   private _validateDrawNumbers(nums: any): boolean {
@@ -1835,6 +1885,127 @@ export class ZodiacPatternAnalyzer {
 
     const vetoKillers = new Set<string>();
 
+    // =========================================================================
+    // 【死穴绝杀】高精密过滤器插件 (Tier 3 Dynamic Weighted Penalty Filter Plugin)
+    // 专门针对特定的历史错误模式，通过直感大盘反馈与多维负向共振，通过动态加权惩罚机制进行100%剔除
+    // =========================================================================
+    const killPluginPenalties: Record<string, number> = {};
+    const totalRecordsCount = records.length;
+
+    // 1. Calculate overall historical frequency in recent 50 periods (long-term trend)
+    const longTermSlice = records.slice(-50);
+    const longTermCounts: Record<string, number> = {};
+    for (const z of zodiacOrder) longTermCounts[z] = 0;
+    for (const rec of longTermSlice) {
+      let zm = numToZodiac;
+      if (engineMode === "dynamic" && rec.archive_year !== undefined) {
+        const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
+        zm = analyzer._getZodiacMap(base);
+      }
+      const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
+      for (const z of zodiacOrder) {
+        if (recZSet.has(z)) longTermCounts[z]++;
+      }
+    }
+
+    // 2. Calculate consecutive omission and recent density
+    for (const z of zodiacOrder) {
+      let omission = 0;
+      let consecutiveOpens = 0; // opened consecutively at the very end
+      
+      // Determine consecutive omission
+      for (let i = totalRecordsCount - 1; i >= 0; i--) {
+        const rec = records[i];
+        let zm = numToZodiac;
+        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
+          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
+          zm = analyzer._getZodiacMap(base);
+        }
+        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
+        if (recZSet.has(z)) {
+          break;
+        }
+        omission++;
+      }
+
+      // Determine consecutive opens at the end
+      for (let i = totalRecordsCount - 1; i >= 0; i--) {
+        const rec = records[i];
+        let zm = numToZodiac;
+        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
+          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
+          zm = analyzer._getZodiacMap(base);
+        }
+        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
+        if (recZSet.has(z)) {
+          consecutiveOpens++;
+        } else {
+          break;
+        }
+      }
+
+      let penalty = 0.0;
+      const reasons: string[] = [];
+
+      // Historical Error Pattern A: 极端长冷温态冰封 (Extreme Deep Freeze Omission)
+      // If omission is extremely high (>= 12 periods), it has entered a deep historical valley
+      if (omission >= 12) {
+        penalty += 0.35 + (omission - 12) * 0.05;
+        reasons.push(`连续遗漏达 ${omission} 期进入长周期冰封带`);
+      }
+
+      // Historical Error Pattern B: 短周期高饱和度排斥 (Short-term High Satiety Repulsion)
+      // If opened 3+ times in recent 5 periods, immediate recurrence probability is extremely low
+      const recent5Recs = records.slice(-5);
+      let openInLast5 = 0;
+      for (const rec of recent5Recs) {
+        let zm = numToZodiac;
+        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
+          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
+          zm = analyzer._getZodiacMap(base);
+        }
+        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
+        if (recZSet.has(z)) openInLast5++;
+      }
+      if (openInLast5 >= 3) {
+        penalty += 0.40;
+        reasons.push(`近 5 期高频饱和开出 ${openInLast5} 次`);
+      }
+
+      // Historical Error Pattern C: 连庄重力引力衰减 (Immediate Double-Streak Attenuation)
+      // If opened consecutively for 2+ periods, immediate third streak is extremely rare
+      if (consecutiveOpens >= 2) {
+        penalty += 0.50;
+        reasons.push(`已连续开出 ${consecutiveOpens} 期，触及连庄极值衰退`);
+      }
+
+      // Historical Error Pattern D: 长期弱信号休眠 (Long-term Weak Signal Hibernation)
+      // If total hits in recent 50 periods is extremely low (e.g. <= 2 hits, under 4% probability)
+      const ltFreq = longTermCounts[z] / 50;
+      if (longTermCounts[z] <= 2) {
+        penalty += 0.30;
+        reasons.push(`长期 (50期) 均值命中偏低至 ${(ltFreq*100).toFixed(1)}% 进入休眠态`);
+      }
+
+      if (penalty > 0) {
+        killPluginPenalties[z] = Math.min(1.0, penalty);
+        evalReasons.push(`【死穴绝杀过滤器】生肖【${z}】因 [${reasons.join(" 且 ")}] 累计叠加惩罚系数 ${penalty.toFixed(2)}`);
+      }
+    }
+
+    // Apply the dynamic weighted penalty and enforce 100% exclusion for severely penalized zodiacs
+    for (const z of zodiacOrder) {
+      const penalty = killPluginPenalties[z] || 0.0;
+      if (penalty > 0) {
+        zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * (1.0 - penalty);
+        // If cumulative penalty >= 0.45, enforce 100% absolute exclusion from recommendation
+        if (penalty >= 0.45) {
+          vetoKillers.add(z);
+          evalReasons.push(`【死穴绝杀过滤器-100%剔除】生肖【${z}】满足高危负向共振，执行死穴绝对拦截，从推荐池 100% 强行绝杀！`);
+        }
+      }
+    }
+
     // A. Scanner 1 (Big sample hot & cold, filtered by active state only)
     if (report.rule1) {
       for (const [condition, data] of Object.entries(report.rule1)) {
@@ -1972,7 +2143,7 @@ export class ZodiacPatternAnalyzer {
         }
       }
 
-      // 保证死穴排除在没有硬性否决的情况下，至少保留 2 个评分最低的进行对冲
+      // 保证死穴排除在没有硬性否决的情况下，至少保留 2 个评分最低 of 满足条件的进行对冲
       if (tierKill.length < 2 && activeCandidates.length > tierHot.length + 1) {
         const needed = 2 - tierKill.length;
         const potentialKills = activeCandidates.slice(-needed).map(x => x[0]);

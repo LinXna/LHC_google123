@@ -24,11 +24,15 @@ function App() {
   const [selectedYears, setSelectedYears] = useState<string[]>([]);
   const [baseZodiac, setBaseZodiac] = useState<string>("马");
   const [engineMode, setEngineMode] = useState<"unified" | "dynamic">("dynamic");
+  const [freshnessEnabled, setFreshnessEnabled] = useState<boolean>(false);
+  const [freshnessYears, setFreshnessYears] = useState<number>(3);
 
   // Applied/Active settings - used for backend API requests and reports display
   const [appliedYears, setAppliedYears] = useState<string[]>([]);
   const [appliedBaseZodiac, setAppliedBaseZodiac] = useState<string>("马");
   const [appliedEngineMode, setAppliedEngineMode] = useState<"unified" | "dynamic">("dynamic");
+  const [appliedFreshnessEnabled, setAppliedFreshnessEnabled] = useState<boolean>(false);
+  const [appliedFreshnessYears, setAppliedFreshnessYears] = useState<number>(3);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [totalRecords, setTotalRecords] = useState<number>(0);
@@ -40,7 +44,9 @@ function App() {
   const hasChanges = 
     JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
     baseZodiac !== appliedBaseZodiac ||
-    engineMode !== appliedEngineMode;
+    engineMode !== appliedEngineMode ||
+    freshnessEnabled !== appliedFreshnessEnabled ||
+    freshnessYears !== appliedFreshnessYears;
 
   // Initial Fetch: List of available years
   useEffect(() => {
@@ -50,10 +56,11 @@ function App() {
         const data = await res.json();
         if (data.status === "success") {
           setYears(data.years);
-          // Default select all years
-          const allFilenames = data.years.map((y: any) => y.filename);
-          setSelectedYears(allFilenames);
-          setAppliedYears(allFilenames);
+          // 优化默认策略：按年份倒序排列，默认仅选中最近 5 年数据，避免久远历史规律稀释近期强特征行为
+          const sortedYears = [...data.years].sort((a: any, b: any) => b.year - a.year);
+          const defaultSelectFiles = sortedYears.slice(0, 5).map((y: any) => y.filename);
+          setSelectedYears(defaultSelectFiles);
+          setAppliedYears(defaultSelectFiles);
         }
       } catch (err) {
         console.error("Failed to fetch years:", err);
@@ -74,7 +81,7 @@ function App() {
     if (appliedYears.length > 0) {
       runAnalysis();
     }
-  }, [appliedYears, appliedBaseZodiac, appliedEngineMode]);
+  }, [appliedYears, appliedBaseZodiac, appliedEngineMode, appliedFreshnessEnabled, appliedFreshnessYears]);
 
   const runAnalysis = async () => {
     setLoading(true);
@@ -86,6 +93,8 @@ function App() {
           selectedYears: appliedYears,
           baseZodiac: appliedBaseZodiac,
           engineMode: appliedEngineMode,
+          freshnessEnabled: appliedFreshnessEnabled,
+          freshnessYears: appliedFreshnessYears,
         }),
       });
       const data = await res.json();
@@ -121,6 +130,8 @@ function App() {
     setAppliedYears(selectedYears);
     setAppliedBaseZodiac(baseZodiac);
     setAppliedEngineMode(engineMode);
+    setAppliedFreshnessEnabled(freshnessEnabled);
+    setAppliedFreshnessYears(freshnessYears);
   };
 
   const handleRunPrediction = async (customWeights?: { w1: number; w2: number }) => {
@@ -134,6 +145,8 @@ function App() {
           baseZodiac: appliedBaseZodiac,
           engineMode: appliedEngineMode,
           customWeights,
+          freshnessEnabled: appliedFreshnessEnabled,
+          freshnessYears: appliedFreshnessYears
         }),
       });
       const data = await res.json();
@@ -257,6 +270,14 @@ function App() {
               totalRecords={totalRecords}
               latestYear={latestYear}
               latestRecord={latestRecord}
+              report={report}
+              prediction={prediction}
+              freshnessEnabled={freshnessEnabled}
+              setFreshnessEnabled={setFreshnessEnabled}
+              freshnessYears={freshnessYears}
+              setFreshnessYears={setFreshnessYears}
+              appliedFreshnessEnabled={appliedFreshnessEnabled}
+              appliedFreshnessYears={appliedFreshnessYears}
             />
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -342,6 +363,8 @@ function App() {
               selectedYears={appliedYears}
               baseZodiac={appliedBaseZodiac}
               engineMode={appliedEngineMode}
+              freshnessEnabled={appliedFreshnessEnabled}
+              freshnessYears={appliedFreshnessYears}
             />
           </div>
         )}
