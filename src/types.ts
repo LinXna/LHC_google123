@@ -152,6 +152,13 @@ export interface AnalyzerReport {
   };
   special_zodiac_bias?: SpecialZodiacBiasRecord[];
   zodiac_multiplicity_rules?: ZodiacMultiplicityRule[];
+  frequentPatterns?: Array<{
+    items: string[];
+    count: number;
+    support: number;
+    confidence?: number;
+    rules?: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+  }>;
 }
 
 export interface ZodiacMultiplicityRule {
@@ -183,6 +190,22 @@ export interface SequentialMatchItem {
   nextZodiacPercentages: Record<string, number>;
 }
 
+export interface DeathBlowDetail {
+  zodiac: string;
+  penalty: number;
+  reasons: string[];
+  enforced: boolean;
+}
+
+export interface DeathBlowStats {
+  baselineKillRate: number;
+  omissionRates: Array<{ bin: string; total: number; kills: number; rate: number }>;
+  densityRates: Array<{ bin: number; total: number; kills: number; rate: number }>;
+  consecutiveRates: Array<{ bin: string; total: number; kills: number; rate: number }>;
+  ltRates: Array<{ bin: string; total: number; kills: number; rate: number }>;
+  sampleSize: number;
+}
+
 export interface PredictionResult {
   nextIssue: string;
   latestIssue: number;
@@ -202,6 +225,8 @@ export interface PredictionResult {
   conclusion: string;
   actionAdvice: string;
   evalReasons: string[];
+  deathBlowDetails?: DeathBlowDetail[];
+  deathBlowStats?: DeathBlowStats;
   calibration?: {
     method: string;
     windowSize?: number;
@@ -241,4 +266,14 @@ export interface PredictionResult {
     leaks: string[];
     success: boolean;
   }>;
+  bayesPredictor?: {
+    priorProbability: number;
+    posteriorRates: Record<string, number>;
+    featuresUsed: Record<string, { o: string; d: number; c: string; lt: string }>;
+  };
+  logisticRegression?: {
+    learnedWeights: Record<string, number>;
+    predictedVetoRates: Record<string, number>;
+    lambda: number;
+  };
 }

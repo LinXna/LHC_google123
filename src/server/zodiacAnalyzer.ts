@@ -2047,6 +2047,10 @@ export class ZodiacPatternAnalyzer {
       diversity: new Set(zodiacMatrix[zodiacMatrix.length - 1]).size
     } : null;
 
+    const minedPatterns = isBacktest
+      ? []
+      : ZodiacPatternAnalyzer.mineFrequentPatterns(zodiacMatrix, 0.03, 0.40);
+
     return {
       total: totalPeriods,
       latest_issue: lastRec ? lastRec.issue : null,
@@ -2060,7 +2064,8 @@ export class ZodiacPatternAnalyzer {
       top_special_expanded: specialExpanded.slice(0, 15),
       top_15_pairs: top15Pairs,
       bottom_15_pairs: bottom15Pairs,
-      combo_linkage: [],
+      combo_linkage: minedPatterns,
+      frequentPatterns: minedPatterns,
       reverse_trace: reverseTraceReport,
       trace_recovery: traceRecoveryMatrix,
       trace_recovery_hot: traceRecoveryHot,
@@ -2075,6 +2080,150 @@ export class ZodiacPatternAnalyzer {
       special_zodiac_bias: specialZodiacBias,
       zodiac_multiplicity_rules: zodiacMultiplicityRules
     };
+  }
+
+  public static mineFrequentPatterns(
+    zodiacMatrix: string[][],
+    minSupport: number = 0.03,
+    minConfidence: number = 0.40
+  ): Array<{
+    items: string[];
+    count: number;
+    support: number;
+    rules: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+  }> {
+    const N = zodiacMatrix.length;
+    if (N === 0) return [];
+
+    const zodiacs = ["马", "蛇", "龙", "兔", "虎", "牛", "鼠", "猪", "狗", "鸡", "猴", "羊"];
+    
+    const itemCounts: Record<string, number> = {};
+    for (const z of zodiacs) itemCounts[z] = 0;
+    for (const row of zodiacMatrix) {
+      if (!row) continue;
+      const rowSet = new Set(row);
+      for (const z of zodiacs) {
+        if (rowSet.has(z)) itemCounts[z]++;
+      }
+    }
+
+    const frequent1: string[] = zodiacs.filter(z => (itemCounts[z] / N) >= minSupport);
+
+    const getCount = (subset: string[]): number => {
+      let count = 0;
+      for (const row of zodiacMatrix) {
+        if (!row) continue;
+        const rowSet = new Set(row);
+        if (subset.every(item => rowSet.has(item))) {
+          count++;
+        }
+      }
+      return count;
+    };
+
+    const c2: string[][] = [];
+    for (let i = 0; i < frequent1.length; i++) {
+      for (let j = i + 1; j < frequent1.length; j++) {
+        c2.push([frequent1[i], frequent1[j]]);
+      }
+    }
+
+    const frequent2: string[][] = [];
+    const itemsetCounts: Record<string, number> = {};
+    for (const itemset of c2) {
+      const count = getCount(itemset);
+      if ((count / N) >= minSupport) {
+        const sorted = [...itemset].sort();
+        frequent2.push(sorted);
+        itemsetCounts[sorted.join(",")] = count;
+      }
+    }
+
+    const c3: string[][] = [];
+    for (let i = 0; i < frequent2.length; i++) {
+      for (let j = i + 1; j < frequent2.length; j++) {
+        const union = Array.from(new Set([...frequent2[i], ...frequent2[j]])).sort();
+        if (union.length === 3) {
+          if (!c3.some(x => x.join(",") === union.join(","))) {
+            c3.push(union);
+          }
+        }
+      }
+    }
+
+    const frequent3: string[][] = [];
+    for (const itemset of c3) {
+      const count = getCount(itemset);
+      if ((count / N) >= minSupport) {
+        frequent3.push(itemset);
+        itemsetCounts[itemset.join(",")] = count;
+      }
+    }
+
+    const c4: string[][] = [];
+    for (let i = 0; i < frequent3.length; i++) {
+      for (let j = i + 1; j < frequent3.length; j++) {
+        const union = Array.from(new Set([...frequent3[i], ...frequent3[j]])).sort();
+        if (union.length === 4) {
+          if (!c4.some(x => x.join(",") === union.join(","))) {
+            c4.push(union);
+          }
+        }
+      }
+    }
+
+    const frequent4: string[][] = [];
+    for (const itemset of c4) {
+      const count = getCount(itemset);
+      if ((count / N) >= minSupport) {
+        frequent4.push(itemset);
+        itemsetCounts[itemset.join(",")] = count;
+      }
+    }
+
+    const allFrequent = [...frequent2, ...frequent3, ...frequent4];
+    const results: Array<{
+      items: string[];
+      count: number;
+      support: number;
+      rules: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+    }> = [];
+
+    for (const itemset of allFrequent) {
+      const itemsetKey = itemset.join(",");
+      const itemsetCount = itemsetCounts[itemsetKey] || getCount(itemset);
+      const support = itemsetCount / N;
+
+      const rules: Array<{ lhs: string[]; rhs: string; confidence: number }> = [];
+      if (itemset.length >= 3) {
+        for (let i = 0; i < itemset.length; i++) {
+          const rhs = itemset[i];
+          const lhs = itemset.filter((_, idx) => idx !== i);
+          const lhsKey = lhs.join(",");
+          const lhsCount = itemsetCounts[lhsKey] || getCount(lhs);
+          if (lhsCount > 0) {
+            const conf = itemsetCount / lhsCount;
+            if (conf >= minConfidence) {
+              rules.push({ lhs, rhs, confidence: conf });
+            }
+          }
+        }
+      }
+
+      results.push({
+        items: itemset,
+        count: itemsetCount,
+        support,
+        rules
+      });
+    }
+
+    results.sort((a, b) => {
+      if (b.support !== a.support) return b.support - a.support;
+      return b.items.length - a.items.length;
+    });
+
+    return results;
   }
 
   // =========================================================================
@@ -2092,6 +2241,7 @@ export class ZodiacPatternAnalyzer {
       calibrationWindow?: number;
       kalmanQ?: number;
       kalmanR?: number;
+      deathBlowFilterEnabled?: boolean;
     }
   ): PredictionResult {
     const analyzer = new ZodiacPatternAnalyzer(customBaseZodiac, engineMode);
@@ -2152,8 +2302,11 @@ export class ZodiacPatternAnalyzer {
       for (const z of zodiacOrder) calibratedRates[z] = 7 / 12; // default neutral probability
     }
 
-    const WEIGHT_RULE1 = customWeights?.w1 !== undefined ? customWeights.w1 : 0.60;
-    const WEIGHT_RULE2 = customWeights?.w2 !== undefined ? customWeights.w2 : 0.40;
+    let WEIGHT_RULE1 = customWeights?.w1 !== undefined ? customWeights.w1 : 0.60;
+    let WEIGHT_RULE2 = customWeights?.w2 !== undefined ? customWeights.w2 : 0.40;
+
+    if (WEIGHT_RULE1 > 1.0) WEIGHT_RULE1 /= 100;
+    if (WEIGHT_RULE2 > 1.0) WEIGHT_RULE2 /= 100;
 
     const zodiacMultipliers: Record<string, number> = {};
     for (const z of zodiacOrder) {
@@ -2165,122 +2318,382 @@ export class ZodiacPatternAnalyzer {
     const vetoKillers = new Set<string>();
 
     // =========================================================================
-    // 【死穴绝杀】高精密过滤器插件 (Tier 3 Dynamic Weighted Penalty Filter Plugin)
-    // 专门针对特定的历史错误模式，通过直感大盘反馈与多维负向共振，通过动态加权惩罚机制进行100%剔除
+    // 【死穴绝杀模式挖掘器】(Data-Driven Death Blow Pattern Miner)
+    // 专门针对历史冷热状态，对所有生肖在每一期历史开奖前的状态属性进行自适应特征建模：
+    // 包含：历史遗漏、近期频次、连庄期数、长期均值。
+    // 计算在特定特征模式下，下一期「100%不出现（成功绝杀）」的真实历史经验条件概率。
     // =========================================================================
     const killPluginPenalties: Record<string, number> = {};
+    const killPluginReasons: Record<string, string[]> = {};
     const totalRecordsCount = records.length;
 
-    // 1. Calculate overall historical frequency in recent 50 periods (long-term trend)
-    const longTermSlice = records.slice(-50);
-    const longTermCounts: Record<string, number> = {};
-    for (const z of zodiacOrder) longTermCounts[z] = 0;
-    for (const rec of longTermSlice) {
-      let zm = numToZodiac;
-      if (engineMode === "dynamic" && rec.archive_year !== undefined) {
-        const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
-        zm = analyzer._getZodiacMap(base);
-      }
-      const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
+    // A. 建立特征状态分布统计容器，以便度量冷热、饱和、连庄的动态条件绝杀率
+    let totalInstances = 0;
+    let baselineKills = 0;
+
+    const omissionTotal: Record<string, number> = { "0-4": 0, "5-8": 0, "9-11": 0, "12-14": 0, "15+": 0 };
+    const omissionKills: Record<string, number> = { "0-4": 0, "5-8": 0, "9-11": 0, "12-14": 0, "15+": 0 };
+
+    const densityTotal: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    const densityKills: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+
+    const consecutiveTotal: Record<string, number> = { "0": 0, "1": 0, "2": 0, "3+": 0 };
+    const consecutiveKills: Record<string, number> = { "0": 0, "1": 0, "2": 0, "3+": 0 };
+
+    const ltTotal: Record<string, number> = { "0-2": 0, "3-10": 0, "11-18": 0, "19+": 0 };
+    const ltKills: Record<string, number> = { "0-2": 0, "3-10": 0, "11-18": 0, "19+": 0 };
+
+    const getOBin = (o: number) => {
+      if (o < 5) return "0-4";
+      if (o < 9) return "5-8";
+      if (o < 12) return "9-11";
+      if (o < 15) return "12-14";
+      return "15+";
+    };
+
+    const getCBin = (c: number) => {
+      if (c === 0) return "0";
+      if (c === 1) return "1";
+      if (c === 2) return "2";
+      return "3+";
+    };
+
+    const getLTBin = (lt: number) => {
+      if (lt <= 2) return "0-2";
+      if (lt <= 10) return "3-10";
+      if (lt <= 18) return "11-18";
+      return "19+";
+    };
+
+    // B. 自适应回溯扫描大盘所有历史交界点，量化各类冷热特征形态的经验绝杀概率
+    const M = matrixForCalibration.length;
+    const scanStart = Math.min(50, Math.floor(M / 4));
+
+    // 使用前缀和数组 (Prefix Sums) 实现 O(1) 的窗口求和 (近 5 期、近 50 期频次)
+    const prefixSum: Record<string, number[]> = {};
+    for (const z of zodiacOrder) {
+      prefixSum[z] = new Array(M + 1).fill(0);
+    }
+    for (let t = 0; t < M; t++) {
+      const currentSet = new Set(matrixForCalibration[t]);
       for (const z of zodiacOrder) {
-        if (recZSet.has(z)) longTermCounts[z]++;
+        prefixSum[z][t + 1] = prefixSum[z][t] + (currentSet.has(z) ? 1 : 0);
       }
     }
 
-    // 2. Calculate consecutive omission and recent density
+    // 增量计算遗漏和连庄状态，消除多重循环 O(M)
+    const omissionHistory: Record<string, number[]> = {};
+    const consecutiveHistory: Record<string, number[]> = {};
     for (const z of zodiacOrder) {
-      let omission = 0;
-      let consecutiveOpens = 0; // opened consecutively at the very end
+      omissionHistory[z] = new Array(M).fill(0);
+      consecutiveHistory[z] = new Array(M).fill(0);
+    }
+
+    const currentOmission: Record<string, number> = {};
+    const currentConsecutive: Record<string, number> = {};
+    for (const z of zodiacOrder) {
+      currentOmission[z] = 0;
+      currentConsecutive[z] = 0;
+    }
+
+    for (let t = 0; t < M; t++) {
+      const currentSet = new Set(matrixForCalibration[t]);
+      for (const z of zodiacOrder) {
+        omissionHistory[z][t] = currentOmission[z];
+        consecutiveHistory[z][t] = currentConsecutive[z];
+
+        if (currentSet.has(z)) {
+          currentOmission[z] = 0;
+          currentConsecutive[z] = currentConsecutive[z] + 1;
+        } else {
+          currentOmission[z] = currentOmission[z] + 1;
+          currentConsecutive[z] = 0;
+        }
+      }
+    }
+
+    const samples: Array<{
+      z: string;
+      oBin: string;
+      dBin: number;
+      cBin: string;
+      ltBin: string;
+      label: number; // 1 if killed (NOT drawn), 0 if opened (drawn)
+    }> = [];
+
+    for (let t = scanStart; t < M; t++) {
+      const openedSet = new Set(matrixForCalibration[t]);
+      for (const z of zodiacOrder) {
+        const o = omissionHistory[z][t];
+        const d = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 5)];
+        const c = consecutiveHistory[z][t];
+        const lt = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 50)];
+
+        const openedAtT = openedSet.has(z);
+        const killedAtT = !openedAtT;
+
+        totalInstances++;
+        if (killedAtT) baselineKills++;
+
+        const oBin = getOBin(o);
+        omissionTotal[oBin]++;
+        if (killedAtT) omissionKills[oBin]++;
+
+        densityTotal[d]++;
+        if (killedAtT) densityKills[d]++;
+
+        const cBin = getCBin(c);
+        consecutiveTotal[cBin]++;
+        if (killedAtT) consecutiveKills[cBin]++;
+
+        const ltBin = getLTBin(lt);
+        ltTotal[ltBin]++;
+        if (killedAtT) ltKills[ltBin]++;
+
+        samples.push({
+          z,
+          oBin,
+          dBin: d,
+          cBin,
+          ltBin,
+          label: killedAtT ? 1 : 0
+        });
+      }
+    }
+
+    // 动态提取基准概率 (即全盘生肖在任意一期不出现的平均占比，理论值约为 1 - 7/12 = 41.7% 或因多样性差异有所波动)
+    const pBaseline = totalInstances > 0 ? baselineKills / totalInstances : 0.55;
+
+    // =========================================================================
+    // 【贝叶斯信念网络预测器与L2正则化逻辑回归】
+    // =========================================================================
+    // 1. 训练贝叶斯信念网络
+    const nbPriorVeto = baselineKills / totalInstances; // P(y=1)
+    const nbPriorOpen = 1.0 - nbPriorVeto; // P(y=0)
+
+    const nbTallyVeto: Record<string, number> = {};
+    const nbTallyOpen: Record<string, number> = {};
+    let countVeto = 0;
+    let countOpen = 0;
+
+    for (const sample of samples) {
+      const keys = [
+        `o=${sample.oBin}`,
+        `d=${sample.dBin}`,
+        `c=${sample.cBin}`,
+        `lt=${sample.ltBin}`
+      ];
+      if (sample.label === 1) {
+        countVeto++;
+        for (const k of keys) {
+          nbTallyVeto[k] = (nbTallyVeto[k] || 0) + 1;
+        }
+      } else {
+        countOpen++;
+        for (const k of keys) {
+          nbTallyOpen[k] = (nbTallyOpen[k] || 0) + 1;
+        }
+      }
+    }
+
+    const oBins = ["0-4", "5-8", "9-11", "12-14", "15+"];
+    const dBins = [0, 1, 2, 3, 4, 5];
+    const cBins = ["0", "1", "2", "3+"];
+    const ltBins = ["0-2", "3-10", "11-18", "19+"];
+
+    const getNbProb = (featKey: string, isVeto: boolean): number => {
+      const tally = isVeto ? nbTallyVeto : nbTallyOpen;
+      const count = isVeto ? countVeto : countOpen;
+      const countVal = tally[featKey] || 0;
       
-      // Determine consecutive omission
-      for (let i = totalRecordsCount - 1; i >= 0; i--) {
-        const rec = records[i];
-        let zm = numToZodiac;
-        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
-          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
-          zm = analyzer._getZodiacMap(base);
+      let numCats = 4;
+      if (featKey.startsWith("o=")) numCats = 5;
+      else if (featKey.startsWith("d=")) numCats = 6;
+      else if (featKey.startsWith("c=")) numCats = 4;
+      else if (featKey.startsWith("lt=")) numCats = 4;
+
+      return (countVal + 1.0) / (count + numCats);
+    };
+
+    // 2. 训练L2正则化逻辑回归模型 (梯度下降，L2 Ridge Penalty)
+    const getFeatureVector = (oBin: string, dBin: number, cBin: string, ltBin: string): number[] => {
+      const vec = new Array(20).fill(0.0);
+      vec[0] = 1.0; // bias
+      
+      const idxO = oBins.indexOf(oBin);
+      if (idxO !== -1) vec[1 + idxO] = 1.0;
+      
+      const idxD = dBins.indexOf(dBin);
+      if (idxD !== -1) vec[1 + 5 + idxD] = 1.0;
+      
+      const idxC = cBins.indexOf(cBin);
+      if (idxC !== -1) vec[1 + 5 + 6 + idxC] = 1.0;
+      
+      const idxLT = ltBins.indexOf(ltBin);
+      if (idxLT !== -1) vec[1 + 5 + 6 + 4 + idxLT] = 1.0;
+      
+      return vec;
+    };
+
+    const D = 20;
+    const lrWeights = new Array(D).fill(0.0);
+    const lrLambda = 0.01; // L2系数 (Ridge penalty)
+    const lrRate = 0.45; // 学习率
+    const lrIterations = 200; // 迭代次数
+
+    for (let iter = 0; iter < lrIterations; iter++) {
+      const gradient = new Array(D).fill(0.0);
+      
+      for (const sample of samples) {
+        const vec = getFeatureVector(sample.oBin, sample.dBin, sample.cBin, sample.ltBin);
+        
+        let wx = 0.0;
+        for (let j = 0; j < D; j++) wx += lrWeights[j] * vec[j];
+        const pred = 1.0 / (1.0 + Math.exp(-wx));
+        
+        const err = pred - sample.label;
+        for (let j = 0; j < D; j++) {
+          gradient[j] += err * vec[j];
         }
-        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
-        if (recZSet.has(z)) {
-          break;
-        }
-        omission++;
+      }
+      
+      for (let j = 0; j < D; j++) {
+        const regVal = (j === 0) ? 0.0 : lrLambda * lrWeights[j];
+        lrWeights[j] -= lrRate * ((gradient[j] / samples.length) + regVal);
+      }
+    }
+
+    // 3. 换算最新一期的贝叶斯后验开出率与逻辑回归绝杀不出现概率
+    const featuresUsed: Record<string, { o: string; d: number; c: string; lt: string }> = {};
+    const bayesPosteriorRates: Record<string, number> = {};
+    const logisticVetoRates: Record<string, number> = {};
+
+    for (const z of zodiacOrder) {
+      const omission = currentOmission[z];
+      const consecutiveOpens = currentConsecutive[z];
+      const openInLast5 = prefixSum[z][M] - prefixSum[z][Math.max(0, M - 5)];
+      const ltCount = prefixSum[z][M] - prefixSum[z][Math.max(0, M - 50)];
+
+      const oBin = getOBin(omission);
+      const cBin = getCBin(consecutiveOpens);
+      const ltBin = getLTBin(ltCount);
+      featuresUsed[z] = { o: oBin, d: openInLast5, c: cBin, lt: ltBin };
+
+      const keys = [
+        `o=${oBin}`,
+        `d=${openInLast5}`,
+        `c=${cBin}`,
+        `lt=${ltBin}`
+      ];
+
+      let logVeto = Math.log(nbPriorVeto);
+      let logOpen = Math.log(nbPriorOpen);
+
+      for (const k of keys) {
+        logVeto += Math.log(getNbProb(k, true));
+        logOpen += Math.log(getNbProb(k, false));
       }
 
-      // Determine consecutive opens at the end
-      for (let i = totalRecordsCount - 1; i >= 0; i--) {
-        const rec = records[i];
-        let zm = numToZodiac;
-        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
-          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
-          zm = analyzer._getZodiacMap(base);
-        }
-        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
-        if (recZSet.has(z)) {
-          consecutiveOpens++;
-        } else {
-          break;
-        }
-      }
+      const maxLog = Math.max(logVeto, logOpen);
+      const eVeto = Math.exp(logVeto - maxLog);
+      const eOpen = Math.exp(logOpen - maxLog);
+      const nbVetoProb = eVeto / (eVeto + eOpen);
+      const nbOpenProb = eOpen / (eVeto + eOpen);
+
+      bayesPosteriorRates[z] = nbOpenProb;
+
+      const vec = getFeatureVector(oBin, openInLast5, cBin, ltBin);
+      let wx = 0.0;
+      for (let j = 0; j < D; j++) wx += lrWeights[j] * vec[j];
+      const pVeto = 1.0 / (1.0 + Math.exp(-wx));
+      logisticVetoRates[z] = pVeto;
+    }
+
+    const learnedWeights: Record<string, number> = {};
+    learnedWeights["bias"] = lrWeights[0];
+    for (let i = 0; i < 5; i++) learnedWeights[`omission_${oBins[i]}`] = lrWeights[1 + i];
+    for (let i = 0; i < 6; i++) learnedWeights[`density_${dBins[i]}`] = lrWeights[1 + 5 + i];
+    for (let i = 0; i < 4; i++) learnedWeights[`consecutive_${cBins[i]}`] = lrWeights[1 + 5 + 6 + i];
+    for (let i = 0; i < 4; i++) learnedWeights[`longterm_${ltBins[i]}`] = lrWeights[1 + 5 + 6 + 4 + i];
+
+    // C. 评估最新一期前，各生肖所处的物理状态，并从挖掘出的历史统计规律中动态换算惩罚系数
+    for (const z of zodiacOrder) {
+      const omission = currentOmission[z];
+      const consecutiveOpens = currentConsecutive[z];
+      const openInLast5 = prefixSum[z][M] - prefixSum[z][Math.max(0, M - 5)];
+      const ltCount = prefixSum[z][M] - prefixSum[z][Math.max(0, M - 50)];
 
       let penalty = 0.0;
       const reasons: string[] = [];
 
-      // Historical Error Pattern A: 极端长冷温态冰封 (Extreme Deep Freeze Omission)
-      // If omission is extremely high (>= 12 periods), it has entered a deep historical valley
+      // 规则 A: 长周期冰封过滤 (Extreme Deep Freeze Omission)
       if (omission >= 12) {
-        penalty += 0.35 + (omission - 12) * 0.05;
-        reasons.push(`连续遗漏达 ${omission} 期进入长周期冰封带`);
-      }
-
-      // Historical Error Pattern B: 短周期高饱和度排斥 (Short-term High Satiety Repulsion)
-      // If opened 3+ times in recent 5 periods, immediate recurrence probability is extremely low
-      const recent5Recs = records.slice(-5);
-      let openInLast5 = 0;
-      for (const rec of recent5Recs) {
-        let zm = numToZodiac;
-        if (engineMode === "dynamic" && rec.archive_year !== undefined) {
-          const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(rec.archive_year);
-          zm = analyzer._getZodiacMap(base);
+        const oBin = getOBin(omission);
+        const pO = omissionTotal[oBin] >= 10 ? omissionKills[oBin] / omissionTotal[oBin] : pBaseline;
+        if (pO > pBaseline) {
+          const penaltyO = (pO - pBaseline) / (1.0 - pBaseline);
+          const scaledPenalty = 0.35 + penaltyO * 0.15; // 映射在 0.35 - 0.50 范围
+          penalty += scaledPenalty;
+          reasons.push(`连续遗漏 ${omission} 期触发长冷 (历史在[${oBin}]段不热开概率为 ${(pO*100).toFixed(1)}% / 动态衰减系数 ${scaledPenalty.toFixed(2)})`);
         }
-        const recZSet = new Set(rec.numbers.map(n => zm[n] || "未知"));
-        if (recZSet.has(z)) openInLast5++;
       }
+
+      // 规则 B: 短周期高饱和度排斥 (Short-term High Satiety Repulsion)
       if (openInLast5 >= 3) {
-        penalty += 0.40;
-        reasons.push(`近 5 期高频饱和开出 ${openInLast5} 次`);
+        const pD = densityTotal[openInLast5] >= 10 ? densityKills[openInLast5] / densityTotal[openInLast5] : pBaseline;
+        if (pD > pBaseline) {
+          const penaltyD = (pD - pBaseline) / (1.0 - pBaseline);
+          const scaledPenalty = 0.30 + penaltyD * 0.15; // 映射在 0.30 - 0.45 范围
+          penalty += scaledPenalty;
+          reasons.push(`近 5 期饱和开出 ${openInLast5} 次 (历史在类似热态后下期不冷概率为 ${(pD*100).toFixed(1)}% / 动态衰减系数 ${scaledPenalty.toFixed(2)})`);
+        }
       }
 
-      // Historical Error Pattern C: 连庄重力引力衰减 (Immediate Double-Streak Attenuation)
-      // If opened consecutively for 2+ periods, immediate third streak is extremely rare
+      // 规则 C: 连庄重力引力衰减 (Streak Attenuation)
       if (consecutiveOpens >= 2) {
-        penalty += 0.50;
-        reasons.push(`已连续开出 ${consecutiveOpens} 期，触及连庄极值衰退`);
+        const cBin = getCBin(consecutiveOpens);
+        const pC = consecutiveTotal[cBin] >= 10 ? consecutiveKills[cBin] / consecutiveTotal[cBin] : pBaseline;
+        if (pC > pBaseline) {
+          const penaltyC = (pC - pBaseline) / (1.0 - pBaseline);
+          const scaledPenalty = 0.40 + penaltyC * 0.15; // 映射在 0.40 - 0.55 范围
+          penalty += scaledPenalty;
+          reasons.push(`已连续开出 ${consecutiveOpens} 期触及连庄极值 (历史类似连开后不再连庄率 ${(pC*100).toFixed(1)}% / 动态衰减系数 ${scaledPenalty.toFixed(2)})`);
+        }
       }
 
-      // Historical Error Pattern D: 长期弱信号休眠 (Long-term Weak Signal Hibernation)
-      // If total hits in recent 50 periods is extremely low (e.g. <= 2 hits, under 4% probability)
-      const ltFreq = longTermCounts[z] / 50;
-      if (longTermCounts[z] <= 2) {
-        penalty += 0.30;
-        reasons.push(`长期 (50期) 均值命中偏低至 ${(ltFreq*100).toFixed(1)}% 进入休眠态`);
+      // 规则 D: 长期弱信号休眠 (Long-term Weak Signal Hibernation)
+      if (ltCount <= 2) {
+        const ltBin = getLTBin(ltCount);
+        const pLT = ltTotal[ltBin] >= 10 ? ltKills[ltBin] / ltTotal[ltBin] : pBaseline;
+        if (pLT > pBaseline) {
+          const penaltyLT = (pLT - pBaseline) / (1.0 - pBaseline);
+          const scaledPenalty = 0.20 + penaltyLT * 0.15; // 映射在 0.20 - 0.35 范围
+          penalty += scaledPenalty;
+          reasons.push(`长期均值仅命中 ${ltCount} 次触发弱休眠 (历史在同等低频下继续低迷率 ${(pLT*100).toFixed(1)}% / 动态衰减系数 ${scaledPenalty.toFixed(2)})`);
+        }
       }
 
       if (penalty > 0) {
         killPluginPenalties[z] = Math.min(1.0, penalty);
+        killPluginReasons[z] = reasons;
         evalReasons.push(`【死穴绝杀过滤器】生肖【${z}】因 [${reasons.join(" 且 ")}] 累计叠加惩罚系数 ${penalty.toFixed(2)}`);
       }
     }
 
     // Apply the dynamic weighted penalty and enforce 100% exclusion for severely penalized zodiacs
+    const deathBlowEnabled = customWeights?.deathBlowFilterEnabled !== false;
     for (const z of zodiacOrder) {
       const penalty = killPluginPenalties[z] || 0.0;
       if (penalty > 0) {
-        zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * (1.0 - penalty);
-        // If cumulative penalty >= 0.45, enforce 100% absolute exclusion from recommendation
-        if (penalty >= 0.45) {
-          vetoKillers.add(z);
-          evalReasons.push(`【死穴绝杀过滤器-100%剔除】生肖【${z}】满足高危负向共振，执行死穴绝对拦截，从推荐池 100% 强行绝杀！`);
+        if (deathBlowEnabled) {
+          zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * (1.0 - penalty);
+          // If cumulative penalty >= 0.60, enforce 100% absolute exclusion from recommendation
+          if (penalty >= 0.60) {
+            vetoKillers.add(z);
+            evalReasons.push(`【死穴绝杀过滤器-100%剔除】生肖【${z}】满足高危负向共振，执行死穴绝对拦截，从推荐池 100% 强行绝杀！`);
+          }
+        } else {
+          evalReasons.push(`【死穴绝杀过滤器-已跳过】生肖【${z}】本应累计叠加惩罚系数 ${penalty.toFixed(2)}，因过滤器已关闭而跳过惩罚机制`);
         }
       }
     }
@@ -2349,6 +2762,37 @@ export class ZodiacPatternAnalyzer {
               difficultyScore -= 2;
             }
           }
+        }
+      }
+    }
+
+    // E. 融合贝叶斯信念网络后验概率与L2正则化逻辑回归绝杀概率
+    for (const z of zodiacOrder) {
+      const bayesOpenProb = bayesPosteriorRates[z] ?? (7 / 12);
+      const logVetoProb = logisticVetoRates[z] ?? 0.5;
+
+      if (deathBlowEnabled) {
+        // 1. L2 Regularized Logistic Regression absolute veto
+        if (logVetoProb >= 0.78) {
+          vetoKillers.add(z);
+          evalReasons.push(`【L2正则化逻辑回归绝杀拦截】生肖【${z}】预测下期不出现后验概率 ${(logVetoProb * 100).toFixed(1)}% (>= 78.0%)，触发高维正则化铁律绝对拦截！`);
+        } else if (logVetoProb >= 0.60) {
+          // Dynamic regression penalty
+          const lrPenalty = (logVetoProb - 0.5) * 0.45;
+          zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * (1.0 - lrPenalty);
+          evalReasons.push(`【L2正则化逻辑回归降权】生肖【${z}】不出现概率较高（${(logVetoProb * 100).toFixed(1)}%），动态降权系数 ${(1.0 - lrPenalty).toFixed(2)}`);
+        }
+
+        // 2. Naive Bayes posterior boost/penalty
+        const baseProb = 0.583; // 7/12 standard probability
+        if (bayesOpenProb > baseProb + 0.05) {
+          const nbBoost = 1.0 + (bayesOpenProb - baseProb) * 0.45;
+          zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * nbBoost;
+          evalReasons.push(`【贝叶斯信念网络利好赋能】生肖【${z}】开出后验概率达 ${(bayesOpenProb * 100).toFixed(1)}% (高于基盘)，获得 ${(nbBoost).toFixed(2)}x 乘数赋能`);
+        } else if (bayesOpenProb < baseProb - 0.08) {
+          const nbPenalty = 1.0 - (baseProb - bayesOpenProb) * 0.40;
+          zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * nbPenalty;
+          evalReasons.push(`【贝叶斯信念网络轻微抑制】生肖【${z}】后验概率偏低（${(bayesOpenProb * 100).toFixed(1)}%），实施 ${(nbPenalty).toFixed(2)}x 抑制惩罚`);
         }
       }
     }
@@ -2667,6 +3111,35 @@ export class ZodiacPatternAnalyzer {
       actionAdvice = "🎯 黄金出击时刻！单点/高阶联合特征与跨期绝杀线在大样本下产生多重锁死共振，防线极其稳固！";
     }
 
+    const deathBlowStats = {
+      baselineKillRate: pBaseline,
+      omissionRates: Object.keys(omissionTotal).map(bin => ({
+        bin,
+        total: omissionTotal[bin],
+        kills: omissionKills[bin],
+        rate: omissionTotal[bin] > 0 ? omissionKills[bin] / omissionTotal[bin] : pBaseline
+      })),
+      densityRates: [0, 1, 2, 3, 4, 5].map(bin => ({
+        bin,
+        total: densityTotal[bin] || 0,
+        kills: densityKills[bin] || 0,
+        rate: (densityTotal[bin] || 0) > 0 ? (densityKills[bin] || 0) / (densityTotal[bin] || 0) : pBaseline
+      })),
+      consecutiveRates: Object.keys(consecutiveTotal).map(bin => ({
+        bin,
+        total: consecutiveTotal[bin],
+        kills: consecutiveKills[bin],
+        rate: consecutiveTotal[bin] > 0 ? consecutiveKills[bin] / consecutiveTotal[bin] : pBaseline
+      })),
+      ltRates: Object.keys(ltTotal).map(bin => ({
+        bin,
+        total: ltTotal[bin],
+        kills: ltKills[bin],
+        rate: ltTotal[bin] > 0 ? ltKills[bin] / ltTotal[bin] : pBaseline
+      })),
+      sampleSize: totalInstances
+    };
+
     return {
       nextIssue,
       latestIssue: latestIssueNum,
@@ -2687,12 +3160,29 @@ export class ZodiacPatternAnalyzer {
       conclusion,
       actionAdvice,
       evalReasons,
+      deathBlowDetails: zodiacOrder.map(z => ({
+        zodiac: z,
+        penalty: killPluginPenalties[z] || 0.0,
+        reasons: killPluginReasons[z] || [],
+        enforced: (killPluginPenalties[z] || 0.0) >= 0.45 && deathBlowEnabled
+      })).filter(d => d.penalty > 0),
+      deathBlowStats,
       calibration: {
         method: calibrationMethod,
         windowSize: calibrationWindow,
         q: kalmanQ,
         r: kalmanR,
         rates: calibratedRates
+      },
+      bayesPredictor: {
+        priorProbability: nbPriorOpen,
+        posteriorRates: bayesPosteriorRates,
+        featuresUsed
+      },
+      logisticRegression: {
+        learnedWeights,
+        predictedVetoRates: logisticVetoRates,
+        lambda: lrLambda
       }
     };
   }

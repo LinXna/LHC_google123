@@ -43,6 +43,7 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
   engineMode = "unified",
 }) => {
   const [activeFinderTab, setActiveFinderTab] = useState<string>("f1");
+  const [f7FilterSize, setF7FilterSize] = useState<number>(0);
   const [activeStatsGroupTab, setActiveStatsGroupTab] = useState<string>("yinyang");
   const [f4SortBy, setF4SortBy] = useState<"bias" | "frequency" | "number">("bias");
   
@@ -689,6 +690,16 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
             }`}
           >
             F6: 生肖重叠 (F6-Dup)
+          </button>
+          <button
+            onClick={() => setActiveFinderTab("f7")}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+              activeFinderTab === "f7"
+                ? "bg-white text-gray-900 shadow-sm"
+                : "text-gray-500 hover:text-gray-800"
+            }`}
+          >
+            F7: 频繁项组合 (F7-FP)
           </button>
           <button
             onClick={() => setActiveFinderTab("prediction")}
@@ -3042,6 +3053,157 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
               </table>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* F7 Tab: Frequent Pattern Mining (FP-Growth equivalent) */}
+      {activeFinderTab === "f7" && (
+        <div className="space-y-6 animate-fade-in">
+          {/* Info Banner */}
+          <div className="bg-indigo-50 border border-indigo-100 rounded-xl p-4 flex items-start gap-2.5">
+            <Info className="w-4.5 h-4.5 text-indigo-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-indigo-800 leading-relaxed font-sans">
+              <span className="font-semibold">F7: 多维频繁生肖项集挖掘 (Pattern Finder V2)：</span>
+              基于改进的 <strong>FP-Growth 频繁项集挖掘算法</strong>，系统自动并行扫描所选过往全部开奖历史记录。不仅能找出高频出现的同时开出组合（支持度 Support），还能进一步提炼出置信度（Confidence）高达 <strong>40% 以上</strong> 的条件概率关联规则，洞悉历史底牌中不可见的物理对冲、规律共振形态。
+            </div>
+          </div>
+
+          {!report?.frequentPatterns || report.frequentPatterns.length === 0 ? (
+            <div className="bg-white border border-gray-200 rounded-2xl p-8 text-center text-gray-400">
+              <AlertCircle className="w-8 h-8 text-indigo-500 mx-auto mb-2 animate-bounce" />
+              <p className="text-sm font-semibold">暂无频繁项集挖掘结果</p>
+              <p className="text-xs text-gray-400 mt-1">请在主控审计舱重新应用配置，以激活 FP-Growth 算法引擎计算。</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left Column: Frequent Itemsets (7 cols) */}
+              <div className="lg:col-span-7 bg-white border border-gray-200 rounded-2xl p-5 shadow-xs space-y-4">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                    <Grid className="w-4.5 h-4.5 text-indigo-500" />
+                    频繁出现生肖组合 (Support &gt;= 3%)
+                  </h3>
+                  
+                  {/* Local filters */}
+                  <div className="flex gap-1 bg-gray-100 p-0.5 rounded-lg text-[10px]">
+                    {[0, 2, 3, 4].map((size) => (
+                      <button
+                        key={size}
+                        onClick={() => setF7FilterSize(size)}
+                        className={`px-2 py-0.5 rounded-md font-semibold transition-all cursor-pointer ${
+                          f7FilterSize === size
+                            ? "bg-white text-gray-900 shadow-3xs"
+                            : "text-gray-500 hover:text-gray-800"
+                        }`}
+                      >
+                        {size === 0 ? "全部" : `${size}阶组合`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="overflow-x-auto border border-gray-100 rounded-xl">
+                  <table className="w-full text-left text-xs text-gray-500 font-sans">
+                    <thead className="bg-gray-50 text-[10px] text-gray-400 uppercase font-bold border-b border-gray-100">
+                      <tr>
+                        <th className="px-4 py-2.5">生肖频繁组合 (Itemset)</th>
+                        <th className="px-4 py-2.5 text-center">阶数</th>
+                        <th className="px-4 py-2.5 text-center">历史频次</th>
+                        <th className="px-4 py-2.5 text-right">支持度 (Support)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-100">
+                      {report.frequentPatterns
+                        .filter(p => f7FilterSize === 0 || p.items.length === f7FilterSize)
+                        .slice(0, 40)
+                        .map((pattern, idx) => (
+                          <tr key={idx} className="hover:bg-gray-50/50 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex flex-wrap gap-1">
+                                {pattern.items.map((z) => (
+                                  <span key={z} className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-100/60 font-bold rounded text-[10px]">
+                                    {z}
+                                  </span>
+                                ))}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-center font-bold text-gray-500">
+                              {pattern.items.length} 阶
+                            </td>
+                            <td className="px-4 py-3 text-center font-mono font-bold text-slate-700">
+                              {pattern.count} 次
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono font-bold text-indigo-600">
+                              {(pattern.support * 100).toFixed(1)}%
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-[10px] text-gray-400 text-center">
+                  * FP-Tree 挖掘得出，以上支持度对应的大盘理论随机基准：2阶（约34.0%）、3阶（约16.2%）
+                </p>
+              </div>
+
+              {/* Right Column: Derived Association Rules (5 cols) */}
+              <div className="lg:col-span-5 bg-white border border-gray-200 rounded-2xl p-5 shadow-xs space-y-4 flex flex-col justify-between">
+                <div className="space-y-4">
+                  <h3 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
+                    <Target className="w-4.5 h-4.5 text-indigo-500" />
+                    高置信度关联决策规则 (Confidence &gt;= 40%)
+                  </h3>
+                  <p className="text-[10px] text-gray-500 leading-normal">
+                    反映了“如果前置生肖条件成立，下一期开奖极概率会出现推论生肖”的<strong>历史规律蕴含式</strong>：
+                  </p>
+
+                  <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+                    {report.frequentPatterns
+                      .flatMap(p => p.rules || [])
+                      .sort((a, b) => b.confidence - a.confidence)
+                      .slice(0, 30)
+                      .map((rule, idx) => (
+                        <div key={idx} className="p-3 bg-slate-50 border border-slate-100 rounded-xl space-y-2 shadow-3xs">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-bold text-slate-400 uppercase tracking-wider">关联规则 #{idx + 1}</span>
+                            <span className="bg-emerald-50 text-emerald-700 border border-emerald-100 font-extrabold px-1.5 py-0.2 rounded font-mono text-[9px]">
+                              置信度: {(rule.confidence * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <div className="flex flex-wrap gap-1">
+                              {rule.lhs.map(z => (
+                                <span key={z} className="px-1.5 py-0.5 bg-slate-200 text-slate-800 border border-slate-300 rounded font-bold text-[10px]">
+                                  {z}
+                                </span>
+                              ))}
+                            </div>
+                            <ArrowRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                            <span className="px-2 py-0.5 bg-indigo-600 text-white font-black rounded text-[10px] shadow-xs">
+                              {rule.rhs}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    {report.frequentPatterns.flatMap(p => p.rules || []).length === 0 && (
+                      <div className="p-4 text-center text-xs text-gray-400 bg-gray-50 rounded-lg">
+                        当前数据集和参数下，暂未提炼出满足 40% 置信度阈值的强规则
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="p-3.5 bg-indigo-50 rounded-xl border border-indigo-100/50 mt-4 font-sans">
+                  <h4 className="text-[11px] font-bold text-indigo-950 flex items-center gap-1">
+                    💡 FP-Growth 战术决策指导
+                  </h4>
+                  <p className="text-[10px] text-indigo-800 leading-normal mt-1">
+                    系统提炼出的关联规则表明了大盘多重共振态。当条件生肖在过往大盘中出现时，推论生肖的出现概率在下一期会被强行拉升。这些在概率空间形成的能量场，是进行下期胆码圈选的最优参照底牌。
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

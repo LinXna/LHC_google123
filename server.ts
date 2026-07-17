@@ -92,6 +92,7 @@ async function startServer() {
 
       const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode, freshnessEnabled, freshnessYears);
       const processedRecords = analyzer.resampleIfEnabled(mergedRecords);
+      
       const report = analyzer.computePatterns(processedRecords);
 
       res.json({
@@ -160,6 +161,7 @@ async function startServer() {
 
       const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode, actualFreshnessEnabled, actualFreshnessYears);
       const processedRecords = analyzer.resampleIfEnabled(mergedRecords);
+      
       const report = analyzer.computePatterns(processedRecords);
 
       const prediction = ZodiacPatternAnalyzer.generatePrediction(processedRecords, report, finalBaseZodiac, engineMode, {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { 
   Database, 
   Compass, 
@@ -27,6 +27,7 @@ function App() {
   const [engineMode, setEngineMode] = useState<"unified" | "dynamic">("dynamic");
   const [freshnessEnabled, setFreshnessEnabled] = useState<boolean>(false);
   const [freshnessYears, setFreshnessYears] = useState<number>(3);
+  const [deathBlowFilterEnabled, setDeathBlowFilterEnabled] = useState<boolean>(true);
   const [autoSave, setAutoSave] = useState<boolean>(true);
 
   // Applied/Active settings - used for backend API requests and reports display
@@ -35,6 +36,7 @@ function App() {
   const [appliedEngineMode, setAppliedEngineMode] = useState<"unified" | "dynamic">("dynamic");
   const [appliedFreshnessEnabled, setAppliedFreshnessEnabled] = useState<boolean>(false);
   const [appliedFreshnessYears, setAppliedFreshnessYears] = useState<number>(3);
+  const [appliedDeathBlowFilterEnabled, setAppliedDeathBlowFilterEnabled] = useState<boolean>(true);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [totalRecords, setTotalRecords] = useState<number>(0);
@@ -44,12 +46,43 @@ function App() {
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
   const [calcDuration, setCalcDuration] = useState<number | null>(null);
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+  
+  // Local cache for analysis results mapping parameter string to result object
+  const cacheRef = useRef<Record<string, {
+    report: AnalyzerReport;
+    totalRecords: number;
+    latestYear: number;
+    baseZodiac: string;
+    latestRecord: any;
+    prediction: PredictionResult;
+  }>>({});
+
+  const getCacheKey = (
+    yrs: string[],
+    baseZod: string,
+    mode: string,
+    freshEnabled: boolean,
+    freshYrs: number,
+    deathBlowEnabled: boolean
+  ) => {
+    return JSON.stringify({
+      years: [...yrs].sort(),
+      baseZod,
+      mode,
+      freshEnabled,
+      freshYrs,
+      deathBlowEnabled,
+    });
+  };
+
   const hasChanges = 
     JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
     baseZodiac !== appliedBaseZodiac ||
     engineMode !== appliedEngineMode ||
     freshnessEnabled !== appliedFreshnessEnabled ||
-    freshnessYears !== appliedFreshnessYears;
+    freshnessYears !== appliedFreshnessYears ||
+    deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled;
 
   // Initial Fetch: List of available years
   useEffect(() => {
@@ -112,7 +145,8 @@ function App() {
         baseZodiac !== appliedBaseZodiac ||
         engineMode !== appliedEngineMode ||
         freshnessEnabled !== appliedFreshnessEnabled ||
-        freshnessYears !== appliedFreshnessYears;
+        freshnessYears !== appliedFreshnessYears ||
+        deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled;
 
       if (changed && selectedYears.length > 0) {
         const handler = setTimeout(() => {
@@ -127,12 +161,14 @@ function App() {
     engineMode,
     freshnessEnabled,
     freshnessYears,
+    deathBlowFilterEnabled,
     autoSave,
     appliedYears,
     appliedBaseZodiac,
     appliedEngineMode,
     appliedFreshnessEnabled,
-    appliedFreshnessYears
+    appliedFreshnessYears,
+    appliedDeathBlowFilterEnabled
   ]);
 
   // When applied settings change, run analysis
@@ -140,15 +176,56 @@ function App() {
     if (appliedYears.length > 0) {
       runAnalysis();
     }
-  }, [appliedYears, appliedBaseZodiac, appliedEngineMode, appliedFreshnessEnabled, appliedFreshnessYears]);
+  }, [
+    appliedYears,
+    appliedBaseZodiac,
+    appliedEngineMode,
+    appliedFreshnessEnabled,
+    appliedFreshnessYears,
+    appliedDeathBlowFilterEnabled
+  ]);
 
   const runAnalysis = async () => {
+    const cacheKey = getCacheKey(
+      appliedYears,
+      appliedBaseZodiac,
+      appliedEngineMode,
+      appliedFreshnessEnabled,
+      appliedFreshnessYears,
+      appliedDeathBlowFilterEnabled
+    );
+
+    // 1. Check local cache state to avoid redundant calls
+    if (cacheRef.current[cacheKey]) {
+      const cached = cacheRef.current[cacheKey];
+      setReport(cached.report);
+      setTotalRecords(cached.totalRecords);
+      setLatestYear(cached.latestYear);
+      if (!appliedBaseZodiac && cached.baseZodiac) {
+        setAppliedBaseZodiac(cached.baseZodiac);
+        setBaseZodiac(cached.baseZodiac);
+      }
+      setLatestRecord(cached.latestRecord);
+      setPrediction(cached.prediction);
+      setCalcDuration(0.1); // Extremely fast indicator
+      return;
+    }
+
+    // 2. Cancel pending requests via AbortController
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     const startTime = performance.now();
     setLoading(true);
     try {
       const res = await fetch("/api/analyze", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
           selectedYears: appliedYears,
           baseZodiac: appliedBaseZodiac,
@@ -159,33 +236,74 @@ function App() {
       });
       const data = await res.json();
       if (data.status === "success") {
-        setReport(data.report);
-        setTotalRecords(data.totalRecords);
-        setLatestYear(data.latestYear);
+        let currentBaseZodiac = appliedBaseZodiac;
         if (!appliedBaseZodiac && data.baseZodiac) {
           setAppliedBaseZodiac(data.baseZodiac);
           setBaseZodiac(data.baseZodiac);
+          currentBaseZodiac = data.baseZodiac;
         }
 
-        // Derive latest draw info from report data
+        let lRecord: any = null;
         if (data.report && data.report.last_issue_data) {
           const l = data.report.last_issue_data;
-          setLatestRecord({
+          lRecord = {
             issue: l.issue,
             date: l.date,
             numbers: l.numbers,
             zodiacs: l.zodiacs,
             diversity: l.diversity
-          });
+          };
         }
         
-        const endTime = performance.now();
-        setCalcDuration(endTime - startTime);
+        // Fetch prediction using the same abort signal
+        const predRes = await fetch("/api/predict", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            selectedYears: appliedYears,
+            baseZodiac: currentBaseZodiac,
+            engineMode: appliedEngineMode,
+            customWeights: {
+              deathBlowFilterEnabled: appliedDeathBlowFilterEnabled
+            },
+            freshnessEnabled: appliedFreshnessEnabled,
+            freshnessYears: appliedFreshnessYears,
+          }),
+        });
+        const predData = await predRes.json();
+        if (predData.status === "success") {
+          setReport(data.report);
+          setTotalRecords(data.totalRecords);
+          setLatestYear(data.latestYear);
+          if (lRecord) setLatestRecord(lRecord);
+          setPrediction(predData.prediction);
+
+          // Store in local cache state
+          cacheRef.current[cacheKey] = {
+            report: data.report,
+            totalRecords: data.totalRecords,
+            latestYear: data.latestYear,
+            baseZodiac: currentBaseZodiac,
+            latestRecord: lRecord,
+            prediction: predData.prediction
+          };
+
+          const endTime = performance.now();
+          setCalcDuration(endTime - startTime);
+        }
       }
-    } catch (err) {
-      console.error("Analysis request failed:", err);
+    } catch (err: any) {
+      if (err.name === "AbortError") {
+        console.log("Analysis or prediction request was cancelled because parameters changed.");
+      } else {
+        console.error("Analysis request failed:", err);
+      }
     } finally {
-      setLoading(false);
+      if (abortControllerRef.current === controller) {
+        setLoading(false);
+        abortControllerRef.current = null;
+      }
     }
   };
 
@@ -195,6 +313,7 @@ function App() {
     setAppliedEngineMode(engineMode);
     setAppliedFreshnessEnabled(freshnessEnabled);
     setAppliedFreshnessYears(freshnessYears);
+    setAppliedDeathBlowFilterEnabled(deathBlowFilterEnabled);
   };
 
   const handleRunPrediction = async (customWeights?: { w1: number; w2: number }) => {
@@ -207,7 +326,10 @@ function App() {
           selectedYears: appliedYears,
           baseZodiac: appliedBaseZodiac,
           engineMode: appliedEngineMode,
-          customWeights,
+          customWeights: {
+            ...customWeights,
+            deathBlowFilterEnabled: appliedDeathBlowFilterEnabled
+          },
           freshnessEnabled: appliedFreshnessEnabled,
           freshnessYears: appliedFreshnessYears
         }),
@@ -343,6 +465,9 @@ function App() {
                   setFreshnessYears={setFreshnessYears}
                   appliedFreshnessEnabled={appliedFreshnessEnabled}
                   appliedFreshnessYears={appliedFreshnessYears}
+                  deathBlowFilterEnabled={deathBlowFilterEnabled}
+                  setDeathBlowFilterEnabled={setDeathBlowFilterEnabled}
+                  appliedDeathBlowFilterEnabled={appliedDeathBlowFilterEnabled}
                   autoSave={autoSave}
                   setAutoSave={setAutoSave}
                 />
@@ -352,6 +477,7 @@ function App() {
                   loading={loading}
                   calcDuration={calcDuration}
                   report={report}
+                  prediction={prediction}
                   appliedYears={appliedYears}
                   appliedEngineMode={appliedEngineMode}
                   appliedFreshnessEnabled={appliedFreshnessEnabled}
