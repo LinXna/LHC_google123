@@ -14,6 +14,7 @@ import { PatternFinderSection } from "./components/PatternFinderSection.tsx";
 import { CompanionAndGapsSection } from "./components/CompanionAndGapsSection.tsx";
 import { SmartPredictorSection } from "./components/SmartPredictorSection.tsx";
 import { BacktestSimulatorSection } from "./components/BacktestSimulatorSection.tsx";
+import { PerformanceMonitorPanel } from "./components/PerformanceMonitorPanel.tsx";
 import { AnalyzerReport, PredictionResult } from "./types.js";
 
 function App() {
@@ -26,6 +27,7 @@ function App() {
   const [engineMode, setEngineMode] = useState<"unified" | "dynamic">("dynamic");
   const [freshnessEnabled, setFreshnessEnabled] = useState<boolean>(false);
   const [freshnessYears, setFreshnessYears] = useState<number>(3);
+  const [autoSave, setAutoSave] = useState<boolean>(true);
 
   // Applied/Active settings - used for backend API requests and reports display
   const [appliedYears, setAppliedYears] = useState<string[]>([]);
@@ -40,6 +42,7 @@ function App() {
   const [latestRecord, setLatestRecord] = useState<any | null>(null);
   const [report, setReport] = useState<AnalyzerReport | null>(null);
   const [prediction, setPrediction] = useState<PredictionResult | null>(null);
+  const [calcDuration, setCalcDuration] = useState<number | null>(null);
 
   const hasChanges = 
     JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
@@ -55,10 +58,13 @@ function App() {
         const res = await fetch("/api/years");
         const data = await res.json();
         if (data.status === "success") {
-          setYears(data.years);
-          // 优化默认策略：按年份倒序排列，默认仅选中最近 5 年数据，避免久远历史规律稀释近期强特征行为
+          // Keep years descending so recent years are on top!
           const sortedYears = [...data.years].sort((a: any, b: any) => b.year - a.year);
-          const defaultSelectFiles = sortedYears.slice(0, 5).map((y: any) => y.filename);
+          setYears(sortedYears);
+          // 历史数据默认搜索2001年到2026年数据，更早的数据默认不选中，可以手动选择
+          const defaultSelectFiles = sortedYears
+            .filter((y: any) => y.year >= 2001 && y.year <= 2026)
+            .map((y: any) => y.filename);
           setSelectedYears(defaultSelectFiles);
           setAppliedYears(defaultSelectFiles);
         }
@@ -69,12 +75,65 @@ function App() {
     fetchYears();
   }, []);
 
+  // Dynamically bound freshnessYears within 1 to maxYear - minYear when selectedYears changes
+  useEffect(() => {
+    const selectedYearNumbers = selectedYears
+      .map(f => {
+        const yr = parseInt(f.split(".")[0]);
+        return isNaN(yr) ? null : yr;
+      })
+      .filter((yr): yr is number => yr !== null)
+      .sort((a, b) => b - a);
+    
+    if (selectedYearNumbers.length > 1) {
+      const maxYear = selectedYearNumbers[0];
+      const minYear = selectedYearNumbers[selectedYearNumbers.length - 1];
+      const maxAllowed = maxYear - minYear;
+      if (freshnessYears > maxAllowed) {
+        setFreshnessYears(Math.max(1, Math.min(3, maxAllowed)));
+      }
+    } else {
+      setFreshnessYears(1);
+    }
+  }, [selectedYears, freshnessYears]);
+
   // Fallback to dashboard tab if no years are applied
   useEffect(() => {
     if (appliedYears.length === 0 && activeTab !== "dashboard") {
       setActiveTab("dashboard");
     }
   }, [appliedYears, activeTab]);
+
+  // Debounce logic for parameter auto-save under dynamic zodiac mode (delay 500ms before automatic validation & calculation)
+  useEffect(() => {
+    if (autoSave && engineMode === "dynamic") {
+      const changed = 
+        JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
+        baseZodiac !== appliedBaseZodiac ||
+        engineMode !== appliedEngineMode ||
+        freshnessEnabled !== appliedFreshnessEnabled ||
+        freshnessYears !== appliedFreshnessYears;
+
+      if (changed && selectedYears.length > 0) {
+        const handler = setTimeout(() => {
+          handleApplySettings();
+        }, 500);
+        return () => clearTimeout(handler);
+      }
+    }
+  }, [
+    selectedYears,
+    baseZodiac,
+    engineMode,
+    freshnessEnabled,
+    freshnessYears,
+    autoSave,
+    appliedYears,
+    appliedBaseZodiac,
+    appliedEngineMode,
+    appliedFreshnessEnabled,
+    appliedFreshnessYears
+  ]);
 
   // When applied settings change, run analysis
   useEffect(() => {
@@ -84,6 +143,7 @@ function App() {
   }, [appliedYears, appliedBaseZodiac, appliedEngineMode, appliedFreshnessEnabled, appliedFreshnessYears]);
 
   const runAnalysis = async () => {
+    const startTime = performance.now();
     setLoading(true);
     try {
       const res = await fetch("/api/analyze", {
@@ -118,6 +178,9 @@ function App() {
             diversity: l.diversity
           });
         }
+        
+        const endTime = performance.now();
+        setCalcDuration(endTime - startTime);
       }
     } catch (err) {
       console.error("Analysis request failed:", err);
@@ -253,32 +316,57 @@ function App() {
         {/* Tab 1: Dashboard Overview */}
         {activeTab === "dashboard" && (
           <div className="space-y-8">
-            <DashboardOverview
-              years={years}
-              selectedYears={selectedYears}
-              setSelectedYears={setSelectedYears}
-              baseZodiac={baseZodiac}
-              setBaseZodiac={setBaseZodiac}
-              engineMode={engineMode}
-              setEngineMode={setEngineMode}
-              appliedYears={appliedYears}
-              appliedBaseZodiac={appliedBaseZodiac}
-              appliedEngineMode={appliedEngineMode}
-              onApplySettings={handleApplySettings}
-              loading={loading}
-              onRefresh={runAnalysis}
-              totalRecords={totalRecords}
-              latestYear={latestYear}
-              latestRecord={latestRecord}
-              report={report}
-              prediction={prediction}
-              freshnessEnabled={freshnessEnabled}
-              setFreshnessEnabled={setFreshnessEnabled}
-              freshnessYears={freshnessYears}
-              setFreshnessYears={setFreshnessYears}
-              appliedFreshnessEnabled={appliedFreshnessEnabled}
-              appliedFreshnessYears={appliedFreshnessYears}
-            />
+            <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 items-start">
+              <div className="xl:col-span-3">
+                <DashboardOverview
+                  years={years}
+                  selectedYears={selectedYears}
+                  setSelectedYears={setSelectedYears}
+                  baseZodiac={baseZodiac}
+                  setBaseZodiac={setBaseZodiac}
+                  engineMode={engineMode}
+                  setEngineMode={setEngineMode}
+                  appliedYears={appliedYears}
+                  appliedBaseZodiac={appliedBaseZodiac}
+                  appliedEngineMode={appliedEngineMode}
+                  onApplySettings={handleApplySettings}
+                  loading={loading}
+                  onRefresh={runAnalysis}
+                  totalRecords={totalRecords}
+                  latestYear={latestYear}
+                  latestRecord={latestRecord}
+                  report={report}
+                  prediction={prediction}
+                  freshnessEnabled={freshnessEnabled}
+                  setFreshnessEnabled={setFreshnessEnabled}
+                  freshnessYears={freshnessYears}
+                  setFreshnessYears={setFreshnessYears}
+                  appliedFreshnessEnabled={appliedFreshnessEnabled}
+                  appliedFreshnessYears={appliedFreshnessYears}
+                  autoSave={autoSave}
+                  setAutoSave={setAutoSave}
+                />
+              </div>
+              <div className="xl:col-span-1 h-full">
+                <PerformanceMonitorPanel
+                  loading={loading}
+                  calcDuration={calcDuration}
+                  report={report}
+                  appliedYears={appliedYears}
+                  appliedEngineMode={appliedEngineMode}
+                  appliedFreshnessEnabled={appliedFreshnessEnabled}
+                  appliedFreshnessYears={appliedFreshnessYears}
+                  hasChanges={hasChanges}
+                  onTriggerCalculation={() => {
+                    if (hasChanges) {
+                      handleApplySettings();
+                    } else {
+                      runAnalysis();
+                    }
+                  }}
+                />
+              </div>
+            </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm flex flex-col justify-between">

@@ -102,6 +102,23 @@ export interface ZodiacScoreDetail {
   confidence: number;
 }
 
+export interface DiversityPrediction {
+  currentDiversity: number;
+  currentSignature: string;
+  globalDistribution: Record<number, number>;
+  globalDivCounts: Record<number, number>;
+  transitionMatrix: Record<number, Record<number, number>>;
+  recentDiversities: number[];
+  recentAverage: number;
+  globalAverage: number;
+  ensembleProbabilities: Record<number, number>;
+  predictedCount: number;
+  confidenceScore: number;
+  implications: string[];
+  backtestAccuracy: number;
+  backtestTotalCount: number;
+}
+
 export interface AnalyzerReport {
   total: number;
   latest_issue: number | null;
@@ -115,6 +132,7 @@ export interface AnalyzerReport {
   rule1: Record<string, Rule1ReportItem>;
   rule1_pairs: Record<string, Rule1PairItem>;
   diversity_repeat_rule: Record<string, DiversityRepeatItem>;
+  diversity_prediction?: DiversityPrediction;
   rule2_kills: Rule2KillItem[];
   rule3_report: Record<string, Rule3RangeItem>;
   top_special_expanded: SpecialNumRecord[];
@@ -171,6 +189,7 @@ export interface PredictionResult {
   lastNums: number[];
   lastZodiacs: string[];
   currentDiversity: number;
+  predictedCount?: number;
   tierHot: string[];
   tierMid: string[];
   tierKill: string[];

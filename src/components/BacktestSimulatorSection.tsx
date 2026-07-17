@@ -43,7 +43,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
   freshnessEnabled = false,
   freshnessYears = 3,
 }) => {
-  const [subTab, setSubTab] = useState<"single" | "year" | "compare">("single");
+  const [subTab, setSubTab] = useState<"single" | "year">("single");
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -927,16 +927,6 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
             }`}
           >
             2026全年度审计
-          </button>
-          <button
-            onClick={() => setSubTab("compare")}
-            className={`px-4 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-              subTab === "compare"
-                ? "bg-white text-indigo-600 shadow-xs"
-                : "text-gray-500 hover:text-gray-955"
-            }`}
-          >
-            引擎分叉与溯源分析
           </button>
         </div>
       </div>

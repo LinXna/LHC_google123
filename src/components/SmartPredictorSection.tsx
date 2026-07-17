@@ -476,6 +476,50 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
             LHC 第 {prediction.nextIssue} 期 精密生肖与号码推荐结果
           </h2>
 
+          {/* 🔮 下期去重数决策对冲与生肖恒定约束看板 */}
+          {prediction.predictedCount !== undefined && (
+            <div className="mb-6 p-4.5 rounded-2xl bg-slate-900 border border-slate-800 text-white shadow-md relative overflow-hidden">
+              <div className="absolute right-0 top-0 opacity-10 pointer-events-none transform translate-x-2 -translate-y-2">
+                <Sparkles className="w-24 h-24 text-amber-300" />
+              </div>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="bg-amber-400 text-slate-950 text-[10px] font-extrabold px-2.5 py-0.5 rounded-full font-mono uppercase tracking-wider animate-pulse">
+                      🔮 联动：下期去重数观测机制
+                    </span>
+                    <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/25 text-[10px] font-medium px-2 py-0.5 rounded-full flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                      已与主控审计舱高精度同步
+                    </span>
+                  </div>
+                  <h3 className="text-sm font-bold text-slate-100 font-sans flex items-center gap-1.5 flex-wrap">
+                    预计下期开奖生肖去重数：
+                    <span className="text-base font-black text-amber-300 font-mono underline decoration-wavy decoration-amber-400/50">
+                      {prediction.predictedCount}
+                    </span>
+                    种不同生肖 
+                    <span className="text-xs text-slate-400 font-normal">
+                      ({prediction.predictedCount <= 5 ? "重叠聚集特征" : prediction.predictedCount === 7 ? "零重复全铺展" : "标准单组重叠"})
+                    </span>
+                  </h3>
+                  <p className="text-[11.5px] text-slate-300 leading-relaxed font-sans">
+                    ⚠️ <strong>【无损数学还原：恢复极差自适应精准门槛】当前推荐数量：{prediction.tierHot.length} 肖。</strong>
+                    之前硬性执行 1:1 数量强制绑定（强制推荐 {prediction.predictedCount} 肖）会迫使引擎混入低分干扰生肖或裁剪高置信度生肖，导致命中率降低。为了<strong>确保原汁原味的高精准率</strong>，系统已切回纯净自适应极差算法（严格控制在 2-5 肖），仅对最高概率生肖予以重磅推荐！
+                  </p>
+                </div>
+                <div className="flex flex-row md:flex-col items-center md:items-end justify-between md:justify-center gap-2 shrink-0 border-t md:border-t-0 md:border-l border-slate-800 pt-3 md:pt-0 md:pl-4">
+                  <div className="text-left md:text-right">
+                    <div className="text-[10px] text-slate-400 font-sans">核心精选生肖</div>
+                    <div className="text-base font-black text-amber-300 font-mono mt-0.5">
+                      {prediction.tierHot.length} 肖
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* 交叉验证与一致性自适应校验舱 (Cross-Validation Module) */}
           {(() => {
             const hotSet = new Set(prediction.tierHot);

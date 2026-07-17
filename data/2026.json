@@ -36,7 +36,190 @@
         ]
       },
       "bodyList": [
-    
+     {
+          "issue": 76,
+          "preDrawDate": "2026-07-14",
+          "preDrawCode": "31,44,27,10,16,19,17",
+          "color": [
+            3,
+            2,
+            2,
+            3,
+            2,
+            1,
+            2
+          ],
+          "czAndFe": [
+            1,
+            12,
+            5,
+            10,
+            4,
+            1,
+            3
+          ],
+          "czAndFeSeven": [
+            -1,
+            -14,
+            1,
+            -2,
+            -3,
+            -37,
+            -6,
+            -11,
+            -7,
+            -9,
+            -20,
+            -4
+          ],
+          "seventhSingleDouble": 0,
+          "seventhBigSmall": 1,
+          "totalBigSmall": 1,
+          "totalSingleDouble": 1,
+          "sumTotal": 164,
+          "nanairo": 1,
+          "seventhCompositeDouble": 1,
+          "seventhCompositeBig": 0,
+          "seventhMantissaBig": 0
+        },
+        {
+          "issue": 75,
+          "preDrawDate": "2026-07-11",
+          "preDrawCode": "5,2,7,11,41,46,43",
+          "color": [
+            2,
+            1,
+            1,
+            2,
+            3,
+            1,
+            2
+          ],
+          "czAndFe": [
+            3,
+            6,
+            1,
+            9,
+            3,
+            10,
+            1
+          ],
+          "czAndFeSeven": [
+            1,
+            -13,
+            -7,
+            -1,
+            -2,
+            -36,
+            -5,
+            -10,
+            -6,
+            -8,
+            -19,
+            -3
+          ],
+          "seventhSingleDouble": 0,
+          "seventhBigSmall": 0,
+          "totalBigSmall": 1,
+          "totalSingleDouble": 0,
+          "sumTotal": 155,
+          "nanairo": 1,
+          "seventhCompositeDouble": 0,
+          "seventhCompositeBig": 0,
+          "seventhMantissaBig": 1
+        },
+        {
+          "issue": 74,
+          "preDrawDate": "2026-07-09",
+          "preDrawCode": "21,7,38,18,1,33,28",
+          "color": [
+            2,
+            1,
+            2,
+            1,
+            1,
+            2,
+            2
+          ],
+          "czAndFe": [
+            11,
+            1,
+            6,
+            2,
+            7,
+            11,
+            4
+          ],
+          "czAndFeSeven": [
+            -3,
+            -12,
+            -6,
+            1,
+            -1,
+            -35,
+            -4,
+            -9,
+            -5,
+            -7,
+            -18,
+            -2
+          ],
+          "seventhSingleDouble": 1,
+          "seventhBigSmall": 0,
+          "totalBigSmall": 1,
+          "totalSingleDouble": 1,
+          "sumTotal": 146,
+          "nanairo": 1,
+          "seventhCompositeDouble": 1,
+          "seventhCompositeBig": 0,
+          "seventhMantissaBig": 0
+        },
+        {
+          "issue": 73,
+          "preDrawDate": "2026-07-07",
+          "preDrawCode": "37,48,34,49,5,43,27",
+          "color": [
+            3,
+            3,
+            1,
+            2,
+            2,
+            2,
+            2
+          ],
+          "czAndFe": [
+            7,
+            8,
+            10,
+            7,
+            3,
+            1,
+            5
+          ],
+          "czAndFeSeven": [
+            -2,
+            -11,
+            -5,
+            -19,
+            1,
+            -34,
+            -3,
+            -8,
+            -4,
+            -6,
+            -17,
+            -1
+          ],
+          "seventhSingleDouble": 0,
+          "seventhBigSmall": 0,
+          "totalBigSmall": 0,
+          "totalSingleDouble": 0,
+          "sumTotal": 243,
+          "nanairo": 1,
+          "seventhCompositeDouble": 0,
+          "seventhCompositeBig": 0,
+          "seventhMantissaBig": 0
+        },
         
         {
           "issue": 72,

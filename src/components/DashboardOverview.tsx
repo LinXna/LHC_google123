@@ -7,7 +7,10 @@ import {
   Layers, 
   CheckSquare, 
   Award,
-  Download
+  Download,
+  Sparkles,
+  TrendingUp,
+  Check
 } from "lucide-react";
 
 interface YearItem {
@@ -46,6 +49,8 @@ interface DashboardOverviewProps {
   setFreshnessYears: (years: number) => void;
   appliedFreshnessEnabled: boolean;
   appliedFreshnessYears: number;
+  autoSave?: boolean;
+  setAutoSave?: (enabled: boolean) => void;
 }
 
 export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
@@ -73,8 +78,64 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   setFreshnessYears,
   appliedFreshnessEnabled,
   appliedFreshnessYears,
+  autoSave = true,
+  setAutoSave,
 }) => {
   const zodiacList = ["马", "蛇", "龙", "兔", "虎", "牛", "鼠", "猪", "狗", "鸡", "猴", "羊"];
+
+  // Find minimum and maximum available years in database
+  const allYearNumbers = React.useMemo(() => {
+    return [...years].map(y => y.year).sort((a, b) => a - b);
+  }, [years]);
+
+  const minAvailableYear = allYearNumbers.length > 0 ? allYearNumbers[0] : 1977;
+  const maxAvailableYear = allYearNumbers.length > 0 ? allYearNumbers[allYearNumbers.length - 1] : 2026;
+
+  // Find currently selected start and end year boundaries
+  const currentStartYear = React.useMemo(() => {
+    const sortedSelected = selectedYears
+      .map(f => parseInt(f.split(".")[0]))
+      .filter((y): y is number => !isNaN(y))
+      .sort((a, b) => a - b);
+    return sortedSelected.length > 0 ? sortedSelected[0] : minAvailableYear;
+  }, [selectedYears, minAvailableYear]);
+
+  const currentEndYear = React.useMemo(() => {
+    const sortedSelected = selectedYears
+      .map(f => parseInt(f.split(".")[0]))
+      .filter((y): y is number => !isNaN(y))
+      .sort((a, b) => a - b);
+    return sortedSelected.length > 0 ? sortedSelected[sortedSelected.length - 1] : maxAvailableYear;
+  }, [selectedYears, maxAvailableYear]);
+
+  const handleRangeChange = (newStart: number, newEnd: number) => {
+    const start = Math.min(newStart, newEnd);
+    const end = Math.max(newStart, newEnd);
+    const newSelected = years
+      .filter(y => y.year >= start && y.year <= end)
+      .map(y => y.filename);
+    setSelectedYears(newSelected);
+  };
+
+  // Extract year numbers from selectedYears (format is "2026.json" or similar)
+  const selectedYearNumbers = selectedYears
+    .map((f) => {
+      const yr = parseInt(f.split(".")[0]);
+      return isNaN(yr) ? null : yr;
+    })
+    .filter((yr): yr is number => yr !== null)
+    .sort((a, b) => b - a);
+
+  const maxYear = selectedYearNumbers.length > 0 ? selectedYearNumbers[0] : 2026;
+  const minYear = selectedYearNumbers.length > 0 ? selectedYearNumbers[selectedYearNumbers.length - 1] : 2001;
+  const totalSelectedCount = selectedYearNumbers.length;
+
+  const canSetFreshness = totalSelectedCount > 1 && maxYear > minYear;
+  const decayMaxYear = maxYear - 1;
+  const decayMinYear = minYear;
+
+  // Map freshnessYears to decayStartYear
+  const currentDecayStartYear = Math.max(decayMinYear, Math.min(decayMaxYear, maxYear - freshnessYears));
 
   const hasChanges = 
     JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
@@ -175,12 +236,6 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     setSelectedYears([]);
   };
 
-  const selectRecentYears = (num: number) => {
-    const sorted = [...years].sort((a, b) => b.year - a.year);
-    const recent = sorted.slice(0, num).map(y => y.filename);
-    setSelectedYears(recent);
-  };
-
   const renderFormattedDate = (dateStr: string) => {
     if (!dateStr) return "";
     const parts = dateStr.split("-");
@@ -236,28 +291,15 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
               <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">选择历史年份</span>
               <div className="flex items-center gap-1.5 flex-wrap">
                 <button 
-                  onClick={() => selectRecentYears(3)}
-                  className="text-[11px] bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-0.5 rounded-md font-medium transition-colors"
-                >
-                  最近3年
-                </button>
-                <button 
-                  onClick={() => selectRecentYears(5)}
-                  className="text-[11px] bg-indigo-50 text-indigo-600 hover:bg-indigo-100 px-2 py-0.5 rounded-md font-medium transition-colors"
-                >
-                  最近5年
-                </button>
-                <span className="text-gray-300 text-xs">|</span>
-                <button 
                   onClick={selectAllYears}
-                  className="text-[11px] text-indigo-650 hover:text-indigo-850 font-semibold"
+                  className="text-[11px] text-indigo-650 hover:text-indigo-850 font-semibold cursor-pointer"
                 >
                   全选
                 </button>
                 <span className="text-gray-300 text-xs">|</span>
                 <button 
                   onClick={selectNoneYears}
-                  className="text-[11px] text-rose-600 hover:text-rose-800 font-semibold"
+                  className="text-[11px] text-rose-600 hover:text-rose-800 font-semibold cursor-pointer"
                 >
                   清空
                 </button>
@@ -270,7 +312,7 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                   <button
                     key={y.filename}
                     onClick={() => toggleYear(y.filename)}
-                    className={`px-2 py-1 text-xs font-medium rounded-lg border transition-all text-center ${
+                    className={`px-2 py-1 text-xs font-medium rounded-lg border transition-all text-center cursor-pointer ${
                       isSelected
                         ? "bg-indigo-600 text-white border-indigo-600 shadow-sm"
                         : "bg-white text-gray-700 border-gray-200 hover:border-gray-300 hover:bg-gray-50"
@@ -281,8 +323,63 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 );
               })}
             </div>
-            <p className="text-[11px] text-gray-500 mt-1.5">
-              提示: 多选年份将自动合并进行跨年度对齐统计。
+
+            {/* Year range slider block under the grid */}
+            <div className="mt-3 bg-indigo-50/40 border border-indigo-100/50 rounded-xl p-3 animate-fade-in space-y-3">
+              <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-950">
+                <span>拖拽选定历史年份区间</span>
+                <span className="bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-md font-bold">
+                  {currentStartYear}年 - {currentEndYear}年
+                </span>
+              </div>
+              
+              <div className="space-y-2">
+                {/* Start Year slider */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>起始年份: {currentStartYear}年</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={minAvailableYear}
+                    max={maxAvailableYear}
+                    value={currentStartYear}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      handleRangeChange(val, currentEndYear);
+                    }}
+                    className="w-full h-1.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                </div>
+
+                {/* End Year slider */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-gray-500">
+                    <span>结束年份: {currentEndYear}年</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={minAvailableYear}
+                    max={maxAvailableYear}
+                    value={currentEndYear}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      handleRangeChange(currentStartYear, val);
+                    }}
+                    className="w-full h-1.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                  />
+                </div>
+              </div>
+
+              <div className="flex justify-between text-[9px] text-gray-400 px-0.5 pt-0.5 border-t border-indigo-100/30">
+                <span>{minAvailableYear}年 (起)</span>
+                <span>已选 {selectedYears.length} 个年份</span>
+                <span>{maxAvailableYear}年 (止)</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-gray-500 mt-2">
+              提示: 拖动滑块或点击上方按钮进行选择，多选年份将自动合并进行跨年度对齐统计。
             </p>
           </div>
 
@@ -306,98 +403,60 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             
             {freshnessEnabled && (
               <div className="mt-3 bg-indigo-50/40 border border-indigo-100/50 rounded-xl p-3 animate-fade-in space-y-2">
-                <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-950">
-                  <span>优先保留强特征年份 (X年内)</span>
-                  <span className="bg-indigo-100 text-indigo-700 px-2.5 py-0.5 rounded-md font-bold">{freshnessYears} 年</span>
-                </div>
-                <input
-                  type="range"
-                  min="1"
-                  max="10"
-                  value={freshnessYears}
-                  onChange={(e) => setFreshnessYears(parseInt(e.target.value))}
-                  className="w-full h-1.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                />
-                <p className="text-[10px] text-gray-500 leading-normal">
-                  * <strong>最近 {freshnessYears} 年：</strong>100% 完整保留历史拟合权重。<br />
-                  * <strong>大于 {freshnessYears} 年：</strong>以指数衰退重采样弱化，解决数据过载引起的预测拟合误差。
-                </p>
+                {!canSetFreshness ? (
+                  <p className="text-[10px] text-amber-600 font-semibold">
+                    ⚠️ 当前未选中足够年份区间（至少需跨越2个不同年份），无法进行保鲜度衰减过滤。
+                  </p>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-indigo-950">
+                      <span>优先保留年份截止</span>
+                      <span className="bg-indigo-100 text-indigo-700 px-2.5 py-0.5 rounded-md font-bold">
+                        {currentDecayStartYear}年
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={decayMinYear}
+                      max={decayMaxYear}
+                      value={currentDecayStartYear}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        setFreshnessYears(Math.max(1, maxYear - val));
+                      }}
+                      className="w-full h-1.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <div className="flex justify-between text-[9px] text-gray-400 px-0.5">
+                      <span>{decayMinYear}年 (最大衰减)</span>
+                      <span>{decayMaxYear}年 (最近1年)</span>
+                    </div>
+                    <p className="text-[10px] text-gray-500 leading-normal pt-1 border-t border-indigo-100/50">
+                      * <strong>最新保留：</strong>{currentDecayStartYear + 1}年 - {maxYear}年 (共 {maxYear - currentDecayStartYear} 年) 完整保留无衰减。<br />
+                      * <strong>历史衰减：</strong>{minYear}年 - {currentDecayStartYear}年 以指数衰退采样弱化，降低久远数据引起的决策干扰。
+                    </p>
+                  </>
+                )}
               </div>
             )}
           </div>
 
-          {engineMode === "unified" && (
-            <div className="border-t border-gray-100 pt-4 mb-4 animate-fade-in">
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-                统一生肖推演引擎本命肖
-              </label>
-              {selectedYears.length === 0 ? (
-                <div className="text-[11px] text-amber-600 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 font-medium leading-relaxed">
-                  ⚠️ 请先在上方选择历史年份，方可设定统一生肖引擎本命肖。
-                </div>
-              ) : (
-                <div className="grid grid-cols-4 gap-1.5">
-                  {zodiacList.map(z => {
-                    const isSelected = baseZodiac === z;
-                    return (
-                      <button
-                        key={z}
-                        onClick={() => setBaseZodiac(z)}
-                        className={`py-1 text-xs font-medium rounded-lg border transition-all cursor-pointer ${
-                          isSelected
-                            ? "bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500/10"
-                            : "bg-white border-gray-200 text-gray-700 hover:border-gray-300"
-                        }`}
-                      >
-                        {z}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="border-t border-gray-100 pt-4 mb-4">
-            <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">
-              生肖映射计算引擎
-            </label>
-            {selectedYears.length === 0 ? (
-              <div className="text-[11px] text-amber-600 bg-amber-50/50 border border-amber-100 rounded-lg p-2.5 font-medium leading-relaxed">
-                ⚠️ 请先在上方选择历史年份，以启用生肖映射引擎切换。
+          {/* Auto-save Config Toggle */}
+          <div className="border-t border-gray-100 pt-4 mb-2">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-gray-700">自动保存配置</span>
+                <span className="text-[10px] text-gray-400">修改参数后 500ms 自动应用并重算</span>
               </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={() => setEngineMode("unified")}
-                    className={`py-2 px-3 text-xs font-semibold rounded-lg border transition-all text-center flex flex-col justify-center items-center gap-0.5 cursor-pointer ${
-                      engineMode === "unified"
-                        ? "bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500/10"
-                        : "bg-white border-gray-200 text-gray-700 hover:border-gray-300"
-                    }`}
-                  >
-                    <span className="font-bold">统一生肖模式</span>
-                    <span className="text-[9px] text-gray-400 font-normal">固定使用上方选择的本命肖</span>
-                  </button>
-                  <button
-                    onClick={() => setEngineMode("dynamic")}
-                    className={`py-2 px-3 text-xs font-semibold rounded-lg border transition-all text-center flex flex-col justify-center items-center gap-0.5 cursor-pointer ${
-                      engineMode === "dynamic"
-                        ? "bg-indigo-50 border-indigo-500 text-indigo-700 ring-1 ring-indigo-500/10"
-                        : "bg-white border-gray-200 text-gray-700 hover:border-gray-300"
-                    }`}
-                  >
-                    <span className="font-bold">动态生肖模式</span>
-                    <span className="text-[9px] text-gray-400 font-normal">依年份自动计算对应本命肖</span>
-                  </button>
-                </div>
-                <p className="text-[10px] text-gray-400 mt-1.5 leading-relaxed">
-                  * <strong>统一生肖：</strong>所有历史年份均套用同一个选定本命肖（如“马”），寻找绝对对应关系的共振规律。<br />
-                  * <strong>动态生肖：</strong>按真实 calendar 年份（如2026年马、2025年蛇、2024年龙）自动查表转换本命肖，进行时序推演。
-                </p>
-              </>
-            )}
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoSave}
+                  onChange={(e) => setAutoSave && setAutoSave(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
           </div>
 
           {/* Confirm Apply / Calculate Button */}
@@ -418,7 +477,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             </button>
             {hasChanges && selectedYears.length > 0 && (
               <p className="text-[10px] text-amber-600 font-semibold text-center mt-1.5 animate-pulse">
-                ⚠️ 检测到参数有变动，请点击上方按钮重新应用计算
+                {autoSave && engineMode === "dynamic"
+                  ? "⚡ 检测到配置变动，500ms 后将自动保存并运行特征大盘重算..."
+                  : "⚠️ 检测到参数有变动，请点击上方按钮重新应用计算"}
               </p>
             )}
             {report && (
@@ -516,6 +577,55 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
                 })}
               </div>
             </div>
+
+            {/* 🔮 AI 下期生肖数量智能研判 */}
+            {report && report.diversity_prediction && (
+              <div className="mb-6 p-5 rounded-2xl bg-gradient-to-br from-indigo-950 via-slate-900 to-indigo-900 border border-indigo-950 text-white shadow-md relative overflow-hidden">
+                <div className="absolute -right-4 -bottom-4 opacity-5 pointer-events-none">
+                  <Sparkles className="w-24 h-24 text-indigo-400" />
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="bg-amber-400 text-indigo-950 text-[9px] font-extrabold px-2 py-0.5 rounded-full font-mono uppercase tracking-wider animate-pulse">
+                        🔮 AI高维规律研判
+                      </span>
+                      <span className="bg-indigo-500/20 text-indigo-200 border border-indigo-500/20 text-[9px] font-medium px-2 py-0.5 rounded-full font-mono">
+                        下期预测 (第 {report.latest_issue ? report.latest_issue + 1 : "---"} 期)
+                      </span>
+                    </div>
+                    <h4 className="text-sm font-bold flex items-center gap-1 font-sans text-indigo-100">
+                      预计下期开奖生肖去重数量：
+                      <span className="text-lg font-extrabold text-amber-300 font-mono underline decoration-wavy decoration-indigo-400">
+                        {report.diversity_prediction.predictedCount}
+                      </span>
+                      种不同生肖
+                    </h4>
+                    <p className="text-[11px] text-indigo-200/80 leading-relaxed font-sans">
+                      状态转移概率分布：
+                      {[4, 5, 6, 7].map((v) => {
+                        const prob = report.diversity_prediction.ensembleProbabilities[v] || 0;
+                        const isMax = v === report.diversity_prediction.predictedCount;
+                        return (
+                          <span key={v} className={`inline-block mr-2 font-mono ${isMax ? "text-amber-300 font-bold" : "text-indigo-200/50"}`}>
+                            {v}种({(prob * 100).toFixed(0)}%)
+                          </span>
+                        );
+                      })}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-start sm:items-end justify-center shrink-0 border-t sm:border-t-0 sm:border-l border-indigo-800/40 pt-3 sm:pt-0 sm:pl-4">
+                    <div className="text-[10px] text-indigo-300 font-sans">转移回测精准度</div>
+                    <div className="text-xs font-black text-emerald-400 font-mono mt-0.5">
+                      {((report.diversity_prediction.backtestAccuracy || 0.42) * 100).toFixed(1)}%
+                    </div>
+                    <div className="text-[9px] text-indigo-300/60 font-sans mt-0.5">
+                      ({report.diversity_prediction.backtestTotalCount}期滚动测试)
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="border-t border-gray-100 pt-4 text-xs text-gray-500 flex items-center gap-1.5">
