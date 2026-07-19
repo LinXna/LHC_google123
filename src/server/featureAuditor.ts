@@ -3,7 +3,7 @@ import * as path from "path";
 import { FeatureResult, LotteryRecord, PredictionResult } from "../types.js";
 import { ZodiacPatternAnalyzer } from "./zodiacAnalyzer.js";
 import { FeatureRepository, FeatureCollector } from "./features.js";
-import { TSStackingClassifier, TSLogisticRegression } from "./mlEngine.js";
+import { TSStackingClassifier, TSLogisticRegression, MachineLearningPredictionModel, TSFeatureEngineering, TSFeatureSelection } from "./mlEngine.js";
 
 export interface FeatureAuditResult {
   featureImportance: {
@@ -332,10 +332,10 @@ export class FeatureAuditor {
 
     // Convert repo data to MLSamples
     const allFeatures = repository.getAllFeatures() as FeatureResult[];
-    const featureNames = Array.from(new Set(allFeatures.map(f => f.featureName)));
+    const featureNames = Array.from(new Set(allFeatures.map((f: any) => f.featureName)));
 
     // Let's find expanded feature names as well
-    const baseSamples = (MachineLearningPredictionModel as any).buildSamplesFromRepo(
+    const baseSamples = MachineLearningPredictionModel.buildSamplesFromRepo(
       repository,
       records,
       baseAnalyzer.zodiacOrder,
@@ -344,11 +344,11 @@ export class FeatureAuditor {
     );
 
     const { expandedSamples, expandedFeatures } = (baseAnalyzer as any).resampleIfEnabled 
-      ? (TSFeatureEngineering as any).expandFeatures(baseSamples, featureNames)
+      ? TSFeatureEngineering.expandFeatures(baseSamples, featureNames)
       : { expandedSamples: baseSamples, expandedFeatures: featureNames };
 
     // Train global Stacker model for Permutation, SHAP, and Frequency calculations
-    const trainingSamples = expandedSamples.filter(s => s.period < records[records.length - 1].issue);
+    const trainingSamples = expandedSamples.filter((s: any) => s.period < records[records.length - 1].issue);
     const stacker = new TSStackingClassifier();
     stacker.fit(trainingSamples, expandedFeatures, false);
 
@@ -402,14 +402,14 @@ export class FeatureAuditor {
     });
 
     // Sort by permutation importance and assign ranks
-    rawImportance.sort((a, b) => b.permutationImportance - a.permutationImportance);
-    const featureImportance = rawImportance.map((item, idx) => ({
+    rawImportance.sort((a: any, b: any) => b.permutationImportance - a.permutationImportance);
+    const featureImportance = rawImportance.map((item: any, idx: number) => ({
       ...item,
       rank: `Rank${idx + 1}`
     }));
 
     // Save feature_importance.json
-    const featureImportanceClean = featureImportance.map(x => ({
+    const featureImportanceClean = featureImportance.map((x: any) => ({
       feature_name: x.featureName,
       importance: parseFloat(x.permutationImportance.toFixed(4)),
       rank: x.rank,
@@ -463,7 +463,7 @@ export class FeatureAuditor {
     // 3. Single Module Benchmark (Walk Forward)
     // Run walk-forward validation for last 15 issues
     const wfIssuesCount = 15;
-    const issues = Array.from(new Set(expandedSamples.map(s => s.period))).sort((a, b) => a - b);
+    const issues = Array.from(new Set(expandedSamples.map((s: any) => s.period))).sort((a: any, b: any) => a - b);
     const testIssues = issues.slice(Math.max(0, issues.length - wfIssuesCount));
 
     const moduleBenchmark: FeatureAuditResult["moduleBenchmark"] = [];
@@ -476,8 +476,8 @@ export class FeatureAuditor {
 
       for (const tIssue of testIssues) {
         // Walk forward training up to tIssue - 1
-        const foldTrain = expandedSamples.filter(s => s.period < tIssue);
-        const foldTest = expandedSamples.filter(s => s.period === tIssue);
+        const foldTrain = expandedSamples.filter((s: any) => (s.period as any) < (tIssue as any));
+        const foldTest = expandedSamples.filter((s: any) => (s.period as any) === (tIssue as any));
 
         if (foldTrain.length === 0 || foldTest.length === 0) continue;
 
@@ -530,8 +530,8 @@ export class FeatureAuditor {
     // Compute walk-forward Baseline (with ALL features)
     const baselinePredictions: { zodiac: string; prob: number; label: number }[] = [];
     for (const tIssue of testIssues) {
-      const foldTrain = expandedSamples.filter(s => s.period < tIssue);
-      const foldTest = expandedSamples.filter(s => s.period === tIssue);
+      const foldTrain = expandedSamples.filter((s: any) => (s.period as any) < (tIssue as any));
+      const foldTest = expandedSamples.filter((s: any) => (s.period as any) === (tIssue as any));
       if (foldTrain.length === 0 || foldTest.length === 0) continue;
 
       const foldStacker = new TSStackingClassifier();
@@ -568,13 +568,13 @@ export class FeatureAuditor {
     // LOO for Modules
     for (const mod of ["F1", "F2", "F3", "F4", "F5", "F6", "F7"]) {
       const modFeatures = this.MODULE_MAPPING[mod] || [];
-      const looFeatures = expandedFeatures.filter(f => !modFeatures.includes(f));
+      const looFeatures = expandedFeatures.filter((f: any) => !modFeatures.includes(f));
       const finalLooFeatures = looFeatures.length > 0 ? looFeatures : ["omission"];
 
       const looPredictions: { zodiac: string; prob: number; label: number }[] = [];
       for (const tIssue of testIssues) {
-        const foldTrain = expandedSamples.filter(s => s.period < tIssue);
-        const foldTest = expandedSamples.filter(s => s.period === tIssue);
+        const foldTrain = expandedSamples.filter((s: any) => (s.period as any) < (tIssue as any));
+        const foldTest = expandedSamples.filter((s: any) => (s.period as any) === (tIssue as any));
         if (foldTrain.length === 0 || foldTest.length === 0) continue;
 
         const foldStacker = new TSStackingClassifier();
@@ -619,13 +619,13 @@ export class FeatureAuditor {
     for (const feat of majorFeatures) {
       if (!expandedFeatures.includes(feat)) continue;
 
-      const looFeatures = expandedFeatures.filter(f => f !== feat && !f.startsWith(`${feat}_`));
+      const looFeatures = expandedFeatures.filter((f: any) => f !== feat && !f.startsWith(`${feat}_`));
       const finalLooFeatures = looFeatures.length > 0 ? looFeatures : ["omission"];
 
       const looPredictions: { zodiac: string; prob: number; label: number }[] = [];
       for (const tIssue of testIssues) {
-        const foldTrain = expandedSamples.filter(s => s.period < tIssue);
-        const foldTest = expandedSamples.filter(s => s.period === tIssue);
+        const foldTrain = expandedSamples.filter((s: any) => (s.period as any) < (tIssue as any));
+        const foldTest = expandedSamples.filter((s: any) => (s.period as any) === (tIssue as any));
         if (foldTrain.length === 0 || foldTest.length === 0) continue;
 
         const foldStacker = new TSStackingClassifier();
@@ -670,15 +670,15 @@ export class FeatureAuditor {
 
     // 5. Correlation Analysis
     const correlationMatrix: FeatureAuditResult["correlationMatrix"] = [];
-    const baseFeatsToCorrelate = expandedFeatures.filter(f => !f.includes("_sq") && !f.includes("_x_") && !f.includes("_roll_"));
+    const baseFeatsToCorrelate = expandedFeatures.filter((f: any) => !f.includes("_sq") && !f.includes("_x_") && !f.includes("_roll_"));
 
     for (let i = 0; i < baseFeatsToCorrelate.length; i++) {
       for (let j = i + 1; j < baseFeatsToCorrelate.length; j++) {
         const f1 = baseFeatsToCorrelate[i];
         const f2 = baseFeatsToCorrelate[j];
 
-        const x = trainingSamples.map(s => s.features[f1] || 0);
-        const y = trainingSamples.map(s => s.features[f2] || 0);
+        const x = trainingSamples.map((s: any) => s.features[f1] || 0);
+        const y = trainingSamples.map((s: any) => s.features[f2] || 0);
 
         const p = this.pearsonCorr(x, y);
         const s = this.spearmanCorr(x, y);
@@ -703,8 +703,8 @@ export class FeatureAuditor {
     const expectedPeriods = issues.filter(p => !actualPeriods.includes(p));
 
     for (const fName of baseFeatsToCorrelate) {
-      const expVals = trainingSamples.filter(s => expectedPeriods.includes(s.period)).map(s => s.features[fName] || 0);
-      const actVals = trainingSamples.filter(s => actualPeriods.includes(s.period)).map(s => s.features[fName] || 0);
+      const expVals = trainingSamples.filter((s: any) => (expectedPeriods as any[]).includes(s.period)).map((s: any) => s.features[fName] || 0);
+      const actVals = trainingSamples.filter((s: any) => (actualPeriods as any[]).includes(s.period)).map((s: any) => s.features[fName] || 0);
 
       const { psi, klExp, jsDiv } = this.computePSI(expVals, actVals);
       
@@ -743,17 +743,17 @@ export class FeatureAuditor {
 
     for (const w of windows) {
       const subsetIssues = issues.slice(Math.max(0, issues.length - w));
-      const subsetSamples = expandedSamples.filter(s => subsetIssues.includes(s.period));
+      const subsetSamples = expandedSamples.filter((s: any) => (subsetIssues as any[]).includes(s.period));
 
       if (subsetSamples.length > 50) {
         const subStacker = new TSStackingClassifier();
         subStacker.fit(subsetSamples, expandedFeatures, true);
 
-        const subPermMap = (TSFeatureSelection as any).computePermutationImportance(subStacker, subsetSamples, expandedFeatures);
-        const subFeaturesImportance = expandedFeatures.map(fName => ({
+        const subPermMap = TSFeatureSelection.computePermutationImportance(subStacker, subsetSamples, expandedFeatures);
+        const subFeaturesImportance = expandedFeatures.map((fName: string) => ({
           featureName: fName,
           permutationImportance: subPermMap[fName] || 0.001
-        })).sort((a, b) => b.permutationImportance - a.permutationImportance).slice(0, 10);
+        })).sort((a: any, b: any) => b.permutationImportance - a.permutationImportance).slice(0, 10);
 
         rollingImportance.push({
           window: w,
