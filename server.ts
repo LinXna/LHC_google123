@@ -170,10 +170,10 @@ async function startServer() {
         freshnessYears: actualFreshnessYears
       });
 
-      // --- NEW: Run Automatic Quality Benchmark comparing Baseline vs Current Weights on recent 20 periods ---
+      // --- NEW: Run Automatic Quality Benchmark comparing Baseline vs Current Weights on recent 10 periods ---
       let benchmark: any = undefined;
       if (processedRecords.length >= ZodiacPatternAnalyzer.MIN_PERIODS) {
-        const benchmarkLimit = 20; // 20 historical periods for evaluation
+        const benchmarkLimit = 10; // 10 historical periods for evaluation
         const totalLen = processedRecords.length;
         const startBenchmarkIdx = Math.max(ZodiacPatternAnalyzer.MIN_PERIODS, totalLen - benchmarkLimit);
 
@@ -213,7 +213,7 @@ async function startServer() {
             sliceReport,
             sliceBaseZodiac,
             engineMode,
-            { w1: 60, w2: 40, calibrationMethod: "wma", calibrationWindow: 15 }
+            { w1: 60, w2: 40, calibrationMethod: "wma", calibrationWindow: 15, isBenchmark: true }
           );
 
           // Current Config Prediction
@@ -222,7 +222,7 @@ async function startServer() {
             sliceReport,
             sliceBaseZodiac,
             engineMode,
-            customWeights
+            { ...customWeights, isBenchmark: true }
           );
 
           // Actual target results
@@ -232,7 +232,7 @@ async function startServer() {
             const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
             activeMap = sliceAnalyzer._getZodiacMap(nextBase);
           }
-          const actualZodiacs = actualNums.map(n => activeMap[n] || "未知");
+          const actualZodiacs = actualNums.map((n: number) => activeMap[n] || "未知");
 
           // Evaluate Baseline
           const baseHotMatches = actualZodiacs.filter(z => baselinePred.tierHot.includes(z)).length;
@@ -331,7 +331,7 @@ async function startServer() {
             sliceReport,
             sliceBaseZodiac,
             engineMode,
-            customWeights
+            { ...customWeights, isBenchmark: true }
           );
 
           // Get actual winning zodiacs
@@ -341,7 +341,7 @@ async function startServer() {
             const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
             activeMap = sliceAnalyzer._getZodiacMap(nextBase);
           }
-          const actualZodiacs = actualNums.map(n => activeMap[n] || "未知");
+          const actualZodiacs = actualNums.map((n: number) => activeMap[n] || "未知");
 
           // Find leaks/fails (winning zodiacs that were mistakenly put into tierKill)
           const leaks = actualZodiacs.filter(z => currentPred.tierKill.includes(z));
@@ -455,14 +455,14 @@ async function startServer() {
           const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(nextActualRecord.archive_year);
           activeMap = analyzer._getZodiacMap(nextBase);
         }
-        const actualZodiacs = actualNums.map(n => activeMap[n]);
+        const actualZodiacs = actualNums.map((n: number) => activeMap[n]);
         const actualZSet = new Set(actualZodiacs);
 
         const hotHits = tierMatchHits(prediction.tierHot, actualZodiacs);
         const midHits = tierMatchHits(prediction.tierMid, actualZodiacs);
         const killHits = tierMatchHits(prediction.tierKill, actualZodiacs);
 
-        const numHits = actualNums.filter(n => prediction.premiumHotNums.includes(n));
+        const numHits = actualNums.filter((n: number) => prediction.premiumHotNums.includes(n));
 
         matchedResults = {
           issue: nextActualRecord.issue,
@@ -490,13 +490,16 @@ async function startServer() {
   // 5. API: Run Batch Backtest for a specific year (e.g. 2026)
   app.post("/api/backtest-year", (req, res) => {
     try {
-      const { year = 2026, baseZodiac, engineMode = "dynamic", customWeights, quarter, selectedYears, onlyListIssues, issueIds, freshnessEnabled = false, freshnessYears = 3 } = req.body;
+      const { year = 2026, baseZodiac, engineMode = "dynamic", customWeights, quarter, selectedYears, onlyListIssues, issueIds, freshnessEnabled = false, freshnessYears = 3, isFullHistory = false } = req.body;
       const files = getAvailableDataFiles();
       
       const targetYear = parseInt(year) || 2026;
       let targetFiles: string[] = [];
 
-      if (Array.isArray(selectedYears) && selectedYears.length > 0) {
+      if (isFullHistory) {
+        // Load all available files starting from 1977
+        targetFiles = files.map(f => path.join(DATA_DIR, f));
+      } else if (Array.isArray(selectedYears) && selectedYears.length > 0) {
         targetFiles = selectedYears
           .filter(f => files.includes(f))
           .map(f => path.join(DATA_DIR, f));
@@ -615,7 +618,8 @@ async function startServer() {
         const prediction = ZodiacPatternAnalyzer.generatePrediction(processedSlice, report, finalBaseZodiac, engineMode, {
           ...customWeights,
           freshnessEnabled: actualFreshnessEnabled,
-          freshnessYears: actualFreshnessYears
+          freshnessYears: actualFreshnessYears,
+          isBenchmark: true
         });
 
         // Check actual draw details of the predicted issue
@@ -625,12 +629,12 @@ async function startServer() {
           const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
           activeMap = analyzer._getZodiacMap(nextBase);
         }
-        const actualZodiacs = actualNums.map(n => activeMap[n] || "未知");
+        const actualZodiacs = actualNums.map((n: number) => activeMap[n] || "未知");
 
         const hotHits = tierMatchHits(prediction.tierHot, actualZodiacs);
         const midHits = tierMatchHits(prediction.tierMid, actualZodiacs);
         const killHits = tierMatchHits(prediction.tierKill, actualZodiacs);
-        const numHits = actualNums.filter(n => prediction.premiumHotNums.includes(n));
+        const numHits = actualNums.filter((n: number) => prediction.premiumHotNums.includes(n));
 
         const hasHotHit = hotHits.length > 0;
         const hasMidHit = midHits.length > 0;

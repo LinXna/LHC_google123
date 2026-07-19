@@ -629,7 +629,7 @@ export const PerformanceMonitorPanel: React.FC<PerformanceMonitorPanelProps> = (
             {auditSubTab === "logistic" && (
               <div className="space-y-2">
                 <p className="text-[10px] text-gray-500 leading-normal">
-                  <strong>L2正则化岭回归分类器</strong>实时学到的特征权重参数 $\mathbf{w}$。正值越大越偏向于排除，负值越偏向于保留。
+                  <strong>L2正则化岭回归分类器</strong>实时学到的特征权重参数 w。正值越大越偏向于排除，负值越偏向于保留。
                 </p>
 
                 {prediction?.logisticRegression?.learnedWeights ? (
@@ -684,7 +684,7 @@ export const PerformanceMonitorPanel: React.FC<PerformanceMonitorPanelProps> = (
                         );
                       })}
                     <div className="text-[8px] font-mono text-gray-400 text-center pt-1">
-                      * 已应用 L2 正则约束 ($\lambda = {prediction.logisticRegression.lambda || "0.15"}$)，无过拟合
+                      * 已应用 L2 正则约束 (lambda = {prediction.logisticRegression.lambda || "0.15"})，无过拟合
                     </div>
                   </div>
                 ) : (
@@ -703,7 +703,7 @@ export const PerformanceMonitorPanel: React.FC<PerformanceMonitorPanelProps> = (
             {auditSubTab === "bayes" && (
               <div className="space-y-2">
                 <p className="text-[10px] text-gray-500 leading-normal">
-                  <strong>朴素贝叶斯信念网络</strong>计算的各生肖在下期开奖中出现的后验概率 $P(\text{出现} | \text{历史特征})$。
+                  <strong>朴素贝叶斯信念网络</strong>计算的各生肖在下期开奖中出现的后验概率 P(出现 | 历史特征)。
                 </p>
 
                 {prediction?.bayesPredictor?.posteriorRates ? (

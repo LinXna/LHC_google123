@@ -9,12 +9,13 @@ import {
   Layers,
   Award
 } from "lucide-react";
-import { DashboardOverview } from "./components/DashboardOverview.tsx";
-import { PatternFinderSection } from "./components/PatternFinderSection.tsx";
-import { CompanionAndGapsSection } from "./components/CompanionAndGapsSection.tsx";
-import { SmartPredictorSection } from "./components/SmartPredictorSection.tsx";
-import { BacktestSimulatorSection } from "./components/BacktestSimulatorSection.tsx";
-import { PerformanceMonitorPanel } from "./components/PerformanceMonitorPanel.tsx";
+import { DashboardOverview } from "./components/DashboardOverview";
+import { PatternFinderSection } from "./components/PatternFinderSection";
+import { CompanionAndGapsSection } from "./components/CompanionAndGapsSection";
+import { SmartPredictorSection } from "./components/SmartPredictorSection";
+import { BacktestSimulatorSection } from "./components/BacktestSimulatorSection";
+import { PerformanceMonitorPanel } from "./components/PerformanceMonitorPanel";
+import { SpecModuleSection } from "./components/SpecModuleSection";
 import { AnalyzerReport, PredictionResult } from "./types.js";
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
   const [freshnessEnabled, setFreshnessEnabled] = useState<boolean>(false);
   const [freshnessYears, setFreshnessYears] = useState<number>(3);
   const [deathBlowFilterEnabled, setDeathBlowFilterEnabled] = useState<boolean>(true);
+  const [f5Enabled, setF5Enabled] = useState<boolean>(true);
   const [autoSave, setAutoSave] = useState<boolean>(true);
 
   // Applied/Active settings - used for backend API requests and reports display
@@ -37,6 +39,7 @@ function App() {
   const [appliedFreshnessEnabled, setAppliedFreshnessEnabled] = useState<boolean>(false);
   const [appliedFreshnessYears, setAppliedFreshnessYears] = useState<number>(3);
   const [appliedDeathBlowFilterEnabled, setAppliedDeathBlowFilterEnabled] = useState<boolean>(true);
+  const [appliedF5Enabled, setAppliedF5Enabled] = useState<boolean>(true);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [totalRecords, setTotalRecords] = useState<number>(0);
@@ -64,7 +67,8 @@ function App() {
     mode: string,
     freshEnabled: boolean,
     freshYrs: number,
-    deathBlowEnabled: boolean
+    deathBlowEnabled: boolean,
+    f5Active: boolean
   ) => {
     return JSON.stringify({
       years: [...yrs].sort(),
@@ -73,6 +77,7 @@ function App() {
       freshEnabled,
       freshYrs,
       deathBlowEnabled,
+      f5Active,
     });
   };
 
@@ -82,7 +87,8 @@ function App() {
     engineMode !== appliedEngineMode ||
     freshnessEnabled !== appliedFreshnessEnabled ||
     freshnessYears !== appliedFreshnessYears ||
-    deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled;
+    deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled ||
+    f5Enabled !== appliedF5Enabled;
 
   // Initial Fetch: List of available years
   useEffect(() => {
@@ -137,21 +143,22 @@ function App() {
     }
   }, [appliedYears, activeTab]);
 
-  // Debounce logic for parameter auto-save under dynamic zodiac mode (delay 500ms before automatic validation & calculation)
+  // Debounce logic for parameter auto-save (delay 1000ms before automatic validation & calculation)
   useEffect(() => {
-    if (autoSave && engineMode === "dynamic") {
+    if (autoSave) {
       const changed = 
         JSON.stringify([...selectedYears].sort()) !== JSON.stringify([...appliedYears].sort()) ||
         baseZodiac !== appliedBaseZodiac ||
         engineMode !== appliedEngineMode ||
         freshnessEnabled !== appliedFreshnessEnabled ||
         freshnessYears !== appliedFreshnessYears ||
-        deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled;
+        deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled ||
+        f5Enabled !== appliedF5Enabled;
 
       if (changed && selectedYears.length > 0) {
         const handler = setTimeout(() => {
           handleApplySettings();
-        }, 500);
+        }, 1000);
         return () => clearTimeout(handler);
       }
     }
@@ -162,13 +169,15 @@ function App() {
     freshnessEnabled,
     freshnessYears,
     deathBlowFilterEnabled,
+    f5Enabled,
     autoSave,
     appliedYears,
     appliedBaseZodiac,
     appliedEngineMode,
     appliedFreshnessEnabled,
     appliedFreshnessYears,
-    appliedDeathBlowFilterEnabled
+    appliedDeathBlowFilterEnabled,
+    appliedF5Enabled
   ]);
 
   // When applied settings change, run analysis
@@ -182,7 +191,8 @@ function App() {
     appliedEngineMode,
     appliedFreshnessEnabled,
     appliedFreshnessYears,
-    appliedDeathBlowFilterEnabled
+    appliedDeathBlowFilterEnabled,
+    appliedF5Enabled
   ]);
 
   const runAnalysis = async () => {
@@ -192,7 +202,8 @@ function App() {
       appliedEngineMode,
       appliedFreshnessEnabled,
       appliedFreshnessYears,
-      appliedDeathBlowFilterEnabled
+      appliedDeathBlowFilterEnabled,
+      appliedF5Enabled
     );
 
     // 1. Check local cache state to avoid redundant calls
@@ -265,7 +276,8 @@ function App() {
             baseZodiac: currentBaseZodiac,
             engineMode: appliedEngineMode,
             customWeights: {
-              deathBlowFilterEnabled: appliedDeathBlowFilterEnabled
+              deathBlowFilterEnabled: appliedDeathBlowFilterEnabled,
+              f5Enabled: appliedF5Enabled
             },
             freshnessEnabled: appliedFreshnessEnabled,
             freshnessYears: appliedFreshnessYears,
@@ -314,9 +326,10 @@ function App() {
     setAppliedFreshnessEnabled(freshnessEnabled);
     setAppliedFreshnessYears(freshnessYears);
     setAppliedDeathBlowFilterEnabled(deathBlowFilterEnabled);
+    setAppliedF5Enabled(f5Enabled);
   };
 
-  const handleRunPrediction = async (customWeights?: { w1: number; w2: number }) => {
+  const handleRunPrediction = async (customWeights?: any) => {
     setLoading(true);
     try {
       const res = await fetch("/api/predict", {
@@ -328,7 +341,8 @@ function App() {
           engineMode: appliedEngineMode,
           customWeights: {
             ...customWeights,
-            deathBlowFilterEnabled: appliedDeathBlowFilterEnabled
+            deathBlowFilterEnabled: appliedDeathBlowFilterEnabled,
+            f5Enabled: appliedF5Enabled
           },
           freshnessEnabled: appliedFreshnessEnabled,
           freshnessYears: appliedFreshnessYears
@@ -359,9 +373,23 @@ function App() {
               <h1 className="text-sm font-bold text-white tracking-tight flex items-center gap-1.5">
                 LHC 自动化双特征共振智能推演大盘
               </h1>
-              <p className="text-[10px] text-slate-400 font-mono">
-                ENGINE V2.1.0 • SWISS ARCHITECTURE
-              </p>
+              <div className="flex flex-col sm:flex-row sm:items-center gap-x-3 gap-y-0.5 mt-0.5">
+                <span className="text-[10px] text-slate-400 font-mono">
+                  ENGINE V2.2.0 • SWISS ARCHITECTURE
+                </span>
+                <span className="hidden sm:inline text-slate-600 text-[10px]">•</span>
+                <span className="text-[10px] text-indigo-300 font-mono">
+                  系统日期: {new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit" })}
+                </span>
+                {latestRecord && (
+                  <>
+                    <span className="hidden sm:inline text-slate-600 text-[10px]">•</span>
+                    <span className="text-[10px] text-emerald-400 font-mono font-semibold">
+                      最新开奖: {latestRecord.issue}期 ({latestRecord.date})
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
           </div>
 
@@ -468,6 +496,9 @@ function App() {
                   deathBlowFilterEnabled={deathBlowFilterEnabled}
                   setDeathBlowFilterEnabled={setDeathBlowFilterEnabled}
                   appliedDeathBlowFilterEnabled={appliedDeathBlowFilterEnabled}
+                  f5Enabled={f5Enabled}
+                  setF5Enabled={setF5Enabled}
+                  appliedF5Enabled={appliedF5Enabled}
                   autoSave={autoSave}
                   setAutoSave={setAutoSave}
                 />
@@ -541,6 +572,8 @@ function App() {
                 </div>
               </div>
             </div>
+
+            <SpecModuleSection />
           </div>
         )}
 

@@ -90,7 +90,8 @@ export function runComprehensiveBenchmark(config: BenchmarkConfig) {
     w1: 60,
     w2: 40,
     calibrationMethod: "wma" as const,
-    calibrationWindow: 15
+    calibrationWindow: 15,
+    isBenchmark: true
   };
 
   // Evaluation stats counters
@@ -139,7 +140,7 @@ export function runComprehensiveBenchmark(config: BenchmarkConfig) {
       sliceReport,
       sliceBaseZodiac,
       engineMode,
-      customWeights
+      customWeights ? ({ ...customWeights, isBenchmark: true } as any) : undefined
     );
 
     // Actual target results
@@ -149,7 +150,7 @@ export function runComprehensiveBenchmark(config: BenchmarkConfig) {
       const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
       activeMap = sliceAnalyzer._getZodiacMap(nextBase);
     }
-    const actualZodiacs = actualNums.map(n => activeMap[n] || "未知");
+    const actualZodiacs = actualNums.map((n: number) => activeMap[n] || "未知");
 
     // Evaluate Baseline
     const baseHotMatches = actualZodiacs.filter(z => baselinePred.tierHot.includes(z)).length;

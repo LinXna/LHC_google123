@@ -43,7 +43,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
   freshnessEnabled = false,
   freshnessYears = 3,
 }) => {
-  const [subTab, setSubTab] = useState<"single" | "year">("single");
+  const [subTab, setSubTab] = useState<"single" | "year" | "compare">("single");
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -85,6 +85,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
   const [errorDetails, setErrorDetails] = useState<string | null>(null);
   const [selectedMonthFilter, setSelectedMonthFilter] = useState<number | null>(null);
   const [chartViewMode, setChartViewMode] = useState<"cumulative" | "monthly">("cumulative");
+  const [isFullHistory, setIsFullHistory] = useState<boolean>(false);
 
   // Comparison states
   const [compareLoading, setCompareLoading] = useState<boolean>(false);
@@ -520,6 +521,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
       selectedYears,
       freshnessEnabled,
       freshnessYears,
+      isFullHistory,
     };
 
     try {
@@ -537,6 +539,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
             selectedYears,
             freshnessEnabled,
             freshnessYears,
+            isFullHistory,
           }),
           signal: controller.signal,
         });
@@ -720,7 +723,7 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
       const chunkSize = 2; // weekly chunk
       const chunks: number[][] = [];
       for (let i = 0; i < issueList.length; i += chunkSize) {
-        chunks.push(issueList.slice(i, i + chunkSize).map(x => x.issue));
+        chunks.push(issueList.slice(i, i + chunkSize).map((x: any) => x.issue));
       }
 
       const totalChunks = chunks.length;
@@ -1145,9 +1148,33 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
                 2026年度穿透对账算法仿真
               </h3>
               <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">
-                载入全部历史数据集进行动态大盘冷热权重纠偏，并对2026年已开奖数据逐期回溯仿真：
+                载入历史数据集进行动态大盘冷热权重纠偏，并对2026年已开奖数据逐期回溯仿真：
                 系统将<strong>严格仅使用该期之前的全部历史数据</strong>输出模型推演策略（重磅主攻、稳健防守、死穴绝杀），再将推演建议与当期开奖生肖对比，从而精确度量模型决策稳定性。
               </p>
+            </div>
+
+            {/* Full-History Rolling Backtest Toggle */}
+            <div className="bg-white/80 backdrop-blur-xs p-4 rounded-xl border border-indigo-100/60 flex items-center justify-between gap-4">
+              <div className="space-y-1">
+                <span className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                  <History className="w-4 h-4 text-indigo-650" />
+                  全历史滚动考核 (Full-History Rolling Backtest Mode)
+                </span>
+                <p className="text-[11px] text-gray-500 leading-normal">
+                  开启后，系统将忽略大盘基础面板选定的年份，强制自 <strong>1977 年</strong> 起的完整历史（长达50年）无缝喂入。
+                  在对 2026 年进行逐期推演时，保证每次推演使用的都是截止该期前的全部历史数据大底，提供最高精度的量化效果评测。
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={isFullHistory}
+                  disabled={yearLoading}
+                  onChange={(e) => setIsFullHistory(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-10 h-6 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
             </div>
 
             {/* Simulation Range Selector */}
@@ -1891,12 +1918,12 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
 
       {/* Sub-tab 3: Engine comparison and divergence analysis */}
       {subTab === "compare" && (() => {
-        const uniMap = new Map(compareUnifiedResult?.results?.map((r: any) => [r.issue, r]) || []);
+        const uniMap = new Map<number, any>(compareUnifiedResult?.results?.map((r: any) => [r.issue, r]) || []);
         const divList: any[] = [];
         
         if (compareUnifiedResult && compareDynamicResult) {
           for (const dyn of compareDynamicResult.results) {
-            const uni = uniMap.get(dyn.issue);
+            const uni = uniMap.get(dyn.issue) as any;
             if (!uni) continue;
             
             const hotDiff = dyn.prediction.tierHot.some((z: string) => !uni.prediction.tierHot.includes(z)) ||

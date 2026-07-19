@@ -152,6 +152,7 @@ export interface AnalyzerReport {
   };
   special_zodiac_bias?: SpecialZodiacBiasRecord[];
   zodiac_multiplicity_rules?: ZodiacMultiplicityRule[];
+  conditionalInhibitors?: Record<string, string[]>;
   frequentPatterns?: Array<{
     items: string[];
     count: number;
@@ -211,6 +212,7 @@ export interface PredictionResult {
   latestIssue: number;
   lastNums: number[];
   lastZodiacs: string[];
+  lastZocs?: string[];
   currentDiversity: number;
   predictedCount?: number;
   tierHot: string[];
@@ -277,3 +279,12 @@ export interface PredictionResult {
     lambda: number;
   };
 }
+
+export interface FeatureResult {
+  featureName: string;
+  value: number;
+  zodiac: string;
+  issue: number;
+  metadata?: any;
+}
+

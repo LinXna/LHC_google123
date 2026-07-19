@@ -21,7 +21,9 @@ import {
   RefreshCw,
   Play,
   Check,
-  X
+  X,
+  Award,
+  Layers
 } from "lucide-react";
 import { AnalyzerReport, Rule2KillItem } from "../types.js";
 
@@ -1792,7 +1794,7 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
                           <div className="mb-3 p-2 bg-indigo-50/60 rounded-xl border border-indigo-100/50 flex items-center justify-between">
                             <span className="text-[11px] text-indigo-900 font-semibold">最新期落入双号：</span>
                             <div className="flex gap-1.5">
-                              {latestNums.map(n => (
+                              {latestNums.map((n: number) => (
                                 <span key={n} className="bg-indigo-600 text-white font-mono font-bold text-xs px-2 py-0.5 rounded">
                                   {n.toString().padStart(2, "0")}
                                 </span>
@@ -1863,7 +1865,7 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
                                         <span className="text-emerald-700 font-bold font-sans shrink-0">🎯 槽位限位最热生肖：</span>
                                         {sStat.next_z_hot && sStat.next_z_hot.length > 0 ? (
                                           <div className="flex gap-1 flex-wrap">
-                                            {sStat.next_z_hot.map(([z, rate]) => (
+                                            {sStat.next_z_hot.map(([z, rate]: [string, number]) => (
                                               <span key={z} className="bg-emerald-50 text-emerald-700 border border-emerald-100 px-1.5 py-0.2 rounded font-bold text-[10px]">
                                                 {z} ({pct(rate)})
                                               </span>
@@ -1877,7 +1879,7 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
                                         <span className="text-rose-700 font-bold font-sans shrink-0">🛑 槽位限位绝对绝杀：</span>
                                         {sStat.next_z_kills && sStat.next_z_kills.length > 0 ? (
                                           <div className="flex gap-1 flex-wrap">
-                                            {sStat.next_z_kills.slice(0, 5).map(z => (
+                                            {sStat.next_z_kills.slice(0, 5).map((z: string) => (
                                               <span key={z} className="bg-rose-50 text-rose-600 border border-rose-100 px-1.5 py-0.2 rounded font-bold text-[10px]">
                                                 【{z}】(杀)
                                               </span>

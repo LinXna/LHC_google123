@@ -16,8 +16,13 @@ import {
   TimelineReport,
   ZodiacScoreDetail,
   SlotStat,
-  SequentialMatchItem
+  SequentialMatchItem,
+  SpecialZodiacBiasRecord,
+  DiversityPrediction,
+  ZodiacMultiplicityRule
 } from "../types.js";
+import { FeatureRepository, FeatureCollector, FeatureDatasetBuilder, FeatureAudit, PredictionSnapshot, PredictionPipeline } from "./features.js";
+
 
 export class ZodiacPatternAnalyzer {
   public static EXT_PERIODS = 5;
@@ -112,7 +117,7 @@ export class ZodiacPatternAnalyzer {
     return num;
   }
 
-  private _getZodiacMap(baseZodiac: string): Record<number, string> {
+  public _getZodiacMap(baseZodiac: string): Record<number, string> {
     if (!this.zodiacOrder.includes(baseZodiac)) {
       throw new Error(`无效本命肖: ${baseZodiac}，可选: ${this.zodiacOrder.join(", ")}`);
     }
@@ -1310,9 +1315,9 @@ export class ZodiacPatternAnalyzer {
         const item = traceRecoveryMatrix["prev1_missing"]?.[z];
         if (item && item.trigger >= 5) {
           if (item.rate >= 0.50) {
-            addScore(z, 2.5, `F7一期断层回补强拉升(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, 2.5, `F5一期轨迹断层回补强拉升(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           } else if (item.rate <= 0.25) {
-            addScore(z, -2.0, `F7一期断层低回补排斥(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, -2.0, `F5一期轨迹断层低回补排斥(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           }
         }
       }
@@ -1321,9 +1326,9 @@ export class ZodiacPatternAnalyzer {
         const item = traceRecoveryMatrix["prev2_missing"]?.[z];
         if (item && item.trigger >= 4) {
           if (item.rate >= 0.55) {
-            addScore(z, 3.0, `F7二期连续断层回补重振(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, 3.0, `F5二期连续轨迹断层回补重振(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           } else if (item.rate <= 0.20) {
-            addScore(z, -2.5, `F7二期连续断层低回补排斥(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, -2.5, `F5二期连续轨迹断层低回补排斥(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           }
         }
       }
@@ -1332,9 +1337,9 @@ export class ZodiacPatternAnalyzer {
         const item = traceRecoveryMatrix["multi_gap"]?.[z] || traceRecoveryMatrix["prev3_missing"]?.[z];
         if (item && item.trigger >= 3) {
           if (item.rate >= 0.60) {
-            addScore(z, 4.0, `F7多期共振回补黄金利好(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, 4.0, `F5多期共振轨迹断层回补黄金利好(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           } else if (item.rate <= 0.15) {
-            addScore(z, -3.5, `F7多期超低回补绝对绝杀(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
+            addScore(z, -3.5, `F5多期超低轨迹断层超低回补绝对绝杀(历史回补率${(item.rate * 100).toFixed(0)}%)`, item.trigger);
           }
         }
       }
@@ -2051,6 +2056,40 @@ export class ZodiacPatternAnalyzer {
       ? []
       : ZodiacPatternAnalyzer.mineFrequentPatterns(zodiacMatrix, 0.03, 0.40);
 
+    // =========================================================================
+    // F1 升级：条件抑制与特定生肖互杀矩阵 (Conditional Inhibitor Matrix)
+    // =========================================================================
+    const conditionalInhibitors: Record<string, string[]> = {};
+    for (const b of this.zodiacOrder) {
+      let bTriggerCount = 0;
+      const aNextCounts: Record<string, number> = {};
+      for (const a of this.zodiacOrder) aNextCounts[a] = 0;
+      
+      for (let i = 0; i < totalPeriods - 1; i++) {
+        const row = zodiacMatrix[i];
+        if (row && row.includes(b)) {
+          bTriggerCount++;
+          const nextRow = zodiacMatrix[i + 1];
+          for (const a of nextRow) {
+            aNextCounts[a]++;
+          }
+        }
+      }
+      
+      // b must appear at least 5 times in history to avoid low sample noise
+      if (bTriggerCount >= 5) {
+        const zeroOcc: string[] = [];
+        for (const a of this.zodiacOrder) {
+          if (aNextCounts[a] === 0) {
+            zeroOcc.push(a);
+          }
+        }
+        if (zeroOcc.length > 0) {
+          conditionalInhibitors[b] = zeroOcc;
+        }
+      }
+    }
+
     return {
       total: totalPeriods,
       latest_issue: lastRec ? lastRec.issue : null,
@@ -2078,7 +2117,8 @@ export class ZodiacPatternAnalyzer {
         zodiac_resonance
       },
       special_zodiac_bias: specialZodiacBias,
-      zodiac_multiplicity_rules: zodiacMultiplicityRules
+      zodiac_multiplicity_rules: zodiacMultiplicityRules,
+      conditionalInhibitors
     };
   }
 
@@ -2194,17 +2234,19 @@ export class ZodiacPatternAnalyzer {
       const itemsetCount = itemsetCounts[itemsetKey] || getCount(itemset);
       const support = itemsetCount / N;
 
-      const rules: Array<{ lhs: string[]; rhs: string; confidence: number }> = [];
+      const rules: Array<{ lhs: string[]; rhs: string; confidence: number; lift: number }> = [];
       if (itemset.length >= 3) {
         for (let i = 0; i < itemset.length; i++) {
           const rhs = itemset[i];
           const lhs = itemset.filter((_, idx) => idx !== i);
           const lhsKey = lhs.join(",");
           const lhsCount = itemsetCounts[lhsKey] || getCount(lhs);
-          if (lhsCount > 0) {
+          const rhsCount = itemCounts[rhs] || getCount([rhs]);
+          if (lhsCount > 0 && rhsCount > 0) {
             const conf = itemsetCount / lhsCount;
-            if (conf >= minConfidence) {
-              rules.push({ lhs, rhs, confidence: conf });
+            const lift = (itemsetCount * N) / (lhsCount * rhsCount);
+            if (conf >= minConfidence && lift >= 1.25) {
+              rules.push({ lhs, rhs, confidence: conf, lift });
             }
           }
         }
@@ -2242,9 +2284,36 @@ export class ZodiacPatternAnalyzer {
       kalmanQ?: number;
       kalmanR?: number;
       deathBlowFilterEnabled?: boolean;
+      f5Enabled?: boolean;
+      isBenchmark?: boolean;
     }
   ): PredictionResult {
     const analyzer = new ZodiacPatternAnalyzer(customBaseZodiac, engineMode);
+    const pipeline = new PredictionPipeline();
+    return pipeline.run(records, analyzer, customWeights);
+    try {
+      const repo = new FeatureRepository();
+      const collector = new FeatureCollector(repo);
+      const builder = new FeatureDatasetBuilder(repo);
+      
+      const lastRecord = records[records.length - 1];
+      if (lastRecord) {
+        const issue = lastRecord.issue;
+        collector.collect(records, records.length - 1, analyzer, customWeights);
+        FeatureAudit.audit(repo, issue, analyzer.zodiacOrder);
+        builder.dumpPeriodFeatures(issue, analyzer.zodiacOrder);
+        
+        // Build dataset asynchronously in the background
+        setTimeout(() => {
+          try {
+            builder.buildDataset(records, analyzer);
+          } catch (err) {}
+        }, 0);
+      }
+    } catch (e) {
+      console.error("Feature-Driven Pipeline Hook Error:", e);
+    }
+
     const zodiacOrder = analyzer.zodiacOrder;
     const numToZodiac = analyzer.zodiacMap;
 
@@ -2698,6 +2767,77 @@ export class ZodiacPatternAnalyzer {
       }
     }
 
+    // =========================================================================
+    // F1 升级：条件抑制与特定生肖互杀
+    // =========================================================================
+    if (report.conditionalInhibitors) {
+      for (const b of lastZSet) {
+        const aList = report.conditionalInhibitors[b];
+        if (aList && aList.length > 0) {
+          for (const a of aList) {
+            zodiacMultipliers[a] = (zodiacMultipliers[a] || 1.0) * 0.15; // 强力拉低
+            vetoKillers.add(a);
+            evalReasons.push(`【F1条件抑制】当期已开生肖【${b}】与历史次期极强互杀关联【${a}】，对【${a}】执行条件抑制阻断，100%绝杀！`);
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // F2 升级：高阶多生肖自由组合 (Combinatorial Sub-Kills) Laplace 平滑 & 联合审计
+    // =========================================================================
+    const lastZArray = Array.from(lastZSet).sort();
+    // Test subsets of size 1 to 4 to avoid combinatoric explosion while remaining highly precise.
+    for (let subsetSize = 1; subsetSize <= 4; subsetSize++) {
+      const combos = ZodiacPatternAnalyzer.getCombinations(lastZArray, subsetSize);
+      for (const combo of combos) {
+        let totalMatch = 0;
+        // For each combo, find how many times next-period did NOT open ANY of the elements in combo.
+        const nextPeriodCounts: Record<string, number> = {};
+        for (const z of zodiacOrder) nextPeriodCounts[z] = 0;
+        
+        for (let i = 0; i < matrixForCalibration.length - 1; i++) {
+          const row = matrixForCalibration[i];
+          const rowSet = new Set(row);
+          // Check if row contains ALL elements of combo
+          const containsAll = combo.every(item => rowSet.has(item));
+          if (containsAll) {
+            totalMatch++;
+            const nextRow = matrixForCalibration[i + 1];
+            for (const z of nextRow) {
+              nextPeriodCounts[z]++;
+            }
+          }
+        }
+        
+        if (totalMatch >= 3) {
+          // Check which zodiacs had 0 appearances next period
+          for (const z of zodiacOrder) {
+            const nextOcc = nextPeriodCounts[z];
+            if (nextOcc === 0) {
+              // Calculate Laplace Smoothed non-appearance probability
+              // Formula: P_smoothed = (totalMatch - nextOcc + 0.25) / (totalMatch + 3)
+              // since nextOcc is 0, P_smoothed = (totalMatch + 0.25) / (totalMatch + 3)
+              const pSmoothed = (totalMatch + 0.25) / (totalMatch + 3);
+              if (pSmoothed >= 0.60) {
+                const comboKey = combo.join("+");
+                // Joint Audit: Check other scores. If score >= 5.0, downgrade veto to a weight deduction penalty.
+                const currentZodiacScore = report.zodiac_score?.[z]?.score || 0.0;
+                if (currentZodiacScore >= 5.0) {
+                  zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * 0.40;
+                  evalReasons.push(`【F2组合绝杀-联合审计降级】组合【${comboKey}】历史次期对生肖【${z}】有强排除趋势 (Laplace平滑后不出现概率 ${(pSmoothed * 100).toFixed(1)}%)，但因【${z}】其它维度积分高达 +${currentZodiacScore.toFixed(1)}，降级为“高概率绝杀（降权 60%）”！🛡️ 贝叶斯平滑`);
+                } else {
+                  zodiacMultipliers[z] = (zodiacMultipliers[z] || 1.0) * 0.05;
+                  vetoKillers.add(z);
+                  evalReasons.push(`【F2高维组合绝杀】触发高阶多生肖自由组合拦截：当期组合【${comboKey}】在历史上次期对生肖【${z}】具有 100% 屏蔽铁律 (Laplace平滑后不出现概率 ${(pSmoothed * 100).toFixed(1)}%)，执行绝对绝杀屏蔽！🛡️ 贝样斯平滑`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // A. Scanner 1 (Big sample hot & cold, filtered by active state only)
     if (report.rule1) {
       for (const [condition, data] of Object.entries(report.rule1)) {
@@ -2743,23 +2883,67 @@ export class ZodiacPatternAnalyzer {
       }
     }
 
+    // =========================================================================
+    // F5 升级：轨迹断层一键启闭开关
+    // =========================================================================
+    const f5Enabled = customWeights?.f5Enabled !== false;
+    if (!f5Enabled) {
+      evalReasons.push(`【F5 轨迹断层过滤器】已通过系统配置一键关闭，本期不产生任何断层积分增益或衰减`);
+    }
+
     // C. Integrate finder scores (F1, F2, F3, F4, F4-Sub, F7) from zodiac_score
     if (report.zodiac_score) {
       for (const z of zodiacOrder) {
         const detail = report.zodiac_score[z];
         if (detail) {
-          if (detail.score <= -3) {
+          let scoreToApply = detail.score;
+          let filteredReasons = [...detail.reasons];
+          
+          if (!f5Enabled) {
+            // Subtract F5 contributions
+            for (const r of detail.reasons) {
+              if (r.startsWith("F5")) {
+                if (r.includes("一期轨迹断层回补强拉升")) scoreToApply -= 2.5;
+                else if (r.includes("一期轨迹断层低回补排斥")) scoreToApply += 2.0;
+                else if (r.includes("二期连续轨迹断层回补重振")) scoreToApply -= 3.0;
+                else if (r.includes("二期连续轨迹断层低回补排斥")) scoreToApply += 2.5;
+                else if (r.includes("多期共振轨迹断层回补黄金利好")) scoreToApply -= 4.0;
+                else if (r.includes("多期超低轨迹断层超低回补绝对绝杀")) scoreToApply += 3.5;
+              }
+            }
+            filteredReasons = detail.reasons.filter(r => !r.startsWith("F5"));
+          }
+          
+          if (scoreToApply <= -3) {
             vetoKillers.add(z);
-            const killReason = detail.reasons.find(r => r.includes("排除") || r.includes("绝杀") || r.includes("冰点") || r.includes("绝对")) || detail.reasons[0] || "多重交叉绝杀";
-            evalReasons.push(`【死穴排除】生肖【${z}】因触发 [${killReason}] 积分低至 ${detail.score.toFixed(1)} 分，系统执行绝对绝杀拦截`);
+            const killReason = filteredReasons.find(r => r.includes("排除") || r.includes("绝杀") || r.includes("冰点") || r.includes("绝对")) || filteredReasons[0] || "多重交叉绝杀";
+            evalReasons.push(`【死穴排除】生肖【${z}】因触发 [${killReason}] 积分低至 ${scoreToApply.toFixed(1)} 分，系统执行绝对绝杀拦截`);
             difficultyScore -= 3;
           } else {
             // Apply finder score as multiplier modifier: each +1 score gets +8% weight
-            zodiacMultipliers[z] += detail.score * 0.08;
-            if (detail.score >= 4) {
-              const hotReason = detail.reasons.find(r => r.includes("利好") || r.includes("共振") || r.includes("热点")) || detail.reasons[0] || "多维热点共振";
-              evalReasons.push(`【重磅主攻】生肖【${z}】因触发 [${hotReason}] 积分高达 +${detail.score.toFixed(1)} 分，本期推荐评分获得高阶赋能增益`);
+            zodiacMultipliers[z] += scoreToApply * 0.08;
+            if (scoreToApply >= 4) {
+              const hotReason = filteredReasons.find(r => r.includes("利好") || r.includes("共振") || r.includes("热点")) || filteredReasons[0] || "多维热点共振";
+              evalReasons.push(`【重磅主攻】生肖【${z}】因触发 [${hotReason}] 积分高达 +${scoreToApply.toFixed(1)} 分，本期推荐评分获得高阶赋能增益`);
               difficultyScore -= 2;
+            }
+          }
+        }
+      }
+    }
+
+    // =========================================================================
+    // F6 & F7 频繁项集微调 (Micro-adjustments via FP-Growth lift and support)
+    // =========================================================================
+    if (report.frequentPatterns) {
+      for (const pattern of report.frequentPatterns) {
+        if (pattern.rules && pattern.rules.length > 0) {
+          for (const rule of pattern.rules) {
+            const lhsInLast = rule.lhs.every(item => lastZSet.has(item));
+            if (lhsInLast) {
+              const rhs = rule.rhs;
+              zodiacMultipliers[rhs] = (zodiacMultipliers[rhs] || 1.0) * 1.05;
+              evalReasons.push(`【F6/F7频繁关联微调】触发高阶关联：因当前已开【${rule.lhs.join(", ")}】组合，频繁项规则预测【${rhs}】开出置信度 ${(rule.confidence * 100).toFixed(0)}%，进行 +5% 乘数自适应平滑微调`);
             }
           }
         }

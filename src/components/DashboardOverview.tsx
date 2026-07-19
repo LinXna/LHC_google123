@@ -67,6 +67,9 @@ interface DashboardOverviewProps {
   deathBlowFilterEnabled: boolean;
   setDeathBlowFilterEnabled: (enabled: boolean) => void;
   appliedDeathBlowFilterEnabled: boolean;
+  f5Enabled: boolean;
+  setF5Enabled: (enabled: boolean) => void;
+  appliedF5Enabled: boolean;
   autoSave?: boolean;
   setAutoSave?: (enabled: boolean) => void;
 }
@@ -99,6 +102,9 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
   deathBlowFilterEnabled,
   setDeathBlowFilterEnabled,
   appliedDeathBlowFilterEnabled,
+  f5Enabled,
+  setF5Enabled,
+  appliedF5Enabled,
   autoSave = true,
   setAutoSave,
 }) => {
@@ -201,7 +207,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
     engineMode !== appliedEngineMode ||
     freshnessEnabled !== appliedFreshnessEnabled ||
     freshnessYears !== appliedFreshnessYears ||
-    deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled;
+    deathBlowFilterEnabled !== appliedDeathBlowFilterEnabled ||
+    f5Enabled !== appliedF5Enabled;
 
   const exportReportToMarkdown = () => {
     if (!report) return;
@@ -242,8 +249,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
       md += `- **重磅主攻生肖 (核心组合)**: \`${prediction.tierHot.join(" ")}\`\n`;
       md += `- **稳健防守生肖 (次要组合)**: \`${prediction.tierMid.join(" ")}\`\n`;
       md += `- **绝对死穴规避 (绝杀拦截)**: \`${prediction.tierKill.join(" ")}\`\n`;
-      md += `- **精选特码弹药配置**: \`${prediction.premiumHotNums.map(n => n.toString().padStart(2, "0")).join(" ")}\`\n`;
-      md += `- **备用特码推荐**: \`${prediction.hotNums.map(n => n.toString().padStart(2, "0")).join(" ")}\`\n\n`;
+      md += `- **精选特码弹药配置**: \`${prediction.premiumHotNums.map((n: number) => n.toString().padStart(2, "0")).join(" ")}\`\n`;
+      md += `- **备用特码推荐**: \`${prediction.hotNums.map((n: number) => n.toString().padStart(2, "0")).join(" ")}\`\n\n`;
       md += `### 💡 决策结论与实战指引\n\n`;
       md += `> **推演结论**:\n> ${prediction.conclusion}\n\n`;
       md += `> **战术配置建议**:\n> ${prediction.actionAdvice}\n\n`;
@@ -521,12 +528,34 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             </p>
           </div>
 
+          {/* F5 (轨迹断层) 状态启闭控制 */}
+          <div className="border-t border-gray-100 pt-4 mb-4">
+            <div className="flex items-center justify-between">
+              <div className="flex flex-col">
+                <span className="text-xs font-bold text-gray-700">F5 (轨迹断层) 校验控制</span>
+                <span className="text-[10px] text-gray-400">控制轨迹断层是否参与最终分数统计</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={f5Enabled}
+                  onChange={(e) => setF5Enabled(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-9 h-5 bg-gray-200 peer-focus:outline-hidden rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+            </div>
+            <p className="text-[10px] text-gray-500 leading-normal pt-1.5">
+              提示: 关闭后，轨迹断层相关的极值分数调整在生成预测时将不会被纳入考量。
+            </p>
+          </div>
+
           {/* Auto-save Config Toggle */}
           <div className="border-t border-gray-100 pt-4 mb-2">
             <div className="flex items-center justify-between">
               <div className="flex flex-col">
                 <span className="text-xs font-bold text-gray-700">自动保存配置</span>
-                <span className="text-[10px] text-gray-400">修改参数后 500ms 自动应用并重算</span>
+                <span className="text-[10px] text-gray-400">修改参数后 1.0秒 自动应用并重算</span>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
                 <input
@@ -558,8 +587,8 @@ export const DashboardOverview: React.FC<DashboardOverviewProps> = ({
             </button>
             {hasChanges && selectedYears.length > 0 && (
               <p className="text-[10px] text-amber-600 font-semibold text-center mt-1.5 animate-pulse">
-                {autoSave && engineMode === "dynamic"
-                  ? "⚡ 检测到配置变动，500ms 后将自动保存并运行特征大盘重算..."
+                {autoSave
+                  ? "⚡ 检测到配置变动，1秒延迟自动保存并重算特征大盘..."
                   : "⚠️ 检测到参数有变动，请点击上方按钮重新应用计算"}
               </p>
             )}
