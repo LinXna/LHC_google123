@@ -1,0 +1,42 @@
+{
+  "version": "v3_ultimate_ensemble_1.0",
+  "timestamp": "2026-07-19T14:03:02.828Z",
+  "featureList": [
+    "omission",
+    "consecutive",
+    "density",
+    "longterm_density",
+    "calibrated_rate",
+    "bayes_open_prob",
+    "logistic_veto_prob",
+    "zodiac_analyzer_score",
+    "f2_combo_veto",
+    "f5_recovery_triggered",
+    "f5_recovery_rate",
+    "omission_sq",
+    "consecutive_sq",
+    "density_sq",
+    "longterm_density_sq",
+    "calibrated_rate_sq",
+    "bayes_open_prob_sq",
+    "zodiac_analyzer_score_sq",
+    "f5_recovery_rate_sq",
+    "omission_x_density",
+    "consecutive_x_density",
+    "calibrated_rate_x_bayes_open_prob",
+    "zodiac_analyzer_score_x_density",
+    "omission_x_calibrated_rate",
+    "omission_roll_mean_w3",
+    "density_roll_mean_w3",
+    "score_roll_max_w3",
+    "omission_roll_mean_w5",
+    "density_roll_mean_w5",
+    "score_roll_max_w5"
+  ],
+  "weights": {
+    "p_lr": 0.0010167168441256624,
+    "p_rf": 0.04014374819114944,
+    "p_et": 0.03125284974930051,
+    "p_gb": -0.026120168325998852
+  }
+}

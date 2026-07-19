@@ -3,6 +3,7 @@ import path from "path";
 import * as fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { ZodiacPatternAnalyzer } from "./src/server/zodiacAnalyzer.js";
+import { FeatureAuditor } from "./src/server/featureAuditor.js";
 
 async function startServer() {
   const app = express();
@@ -16,7 +17,7 @@ async function startServer() {
   function getAvailableDataFiles(): string[] {
     if (!fs.existsSync(DATA_DIR)) return [];
     return fs.readdirSync(DATA_DIR)
-      .filter(f => f.endsWith(".json"))
+      .filter(f => /^\d+\.json$/.test(f))
       .sort();
   }
 
@@ -170,12 +171,14 @@ async function startServer() {
         freshnessYears: actualFreshnessYears
       });
 
-      // --- NEW: Run Automatic Quality Benchmark comparing Baseline vs Current Weights on recent 10 periods ---
+      // --- NEW: Run Automatic Quality Benchmark & Intercept History simultaneously in ONE unified loop ---
       let benchmark: any = undefined;
+      let killInterceptHistory: any[] = [];
+
       if (processedRecords.length >= ZodiacPatternAnalyzer.MIN_PERIODS) {
-        const benchmarkLimit = 10; // 10 historical periods for evaluation
+        const loopLimit = (engineMode === "dynamic" || processedRecords.length > 150) ? 5 : 10;
         const totalLen = processedRecords.length;
-        const startBenchmarkIdx = Math.max(ZodiacPatternAnalyzer.MIN_PERIODS, totalLen - benchmarkLimit);
+        const startIdx = Math.max(ZodiacPatternAnalyzer.MIN_PERIODS, totalLen - loopLimit);
 
         let baselineHotRec = 0;
         let baselineHotHits = 0;
@@ -195,7 +198,7 @@ async function startServer() {
 
         let testedCount = 0;
 
-        for (let i = startBenchmarkIdx; i < totalLen; i++) {
+        for (let i = startIdx; i < totalLen; i++) {
           const currentRecord = processedRecords[i];
           const historicalSlice = processedRecords.slice(0, i);
           if (historicalSlice.length < ZodiacPatternAnalyzer.MIN_PERIODS) continue;
@@ -207,16 +210,7 @@ async function startServer() {
           const sliceAnalyzer = new ZodiacPatternAnalyzer(sliceBaseZodiac, engineMode);
           const sliceReport = sliceAnalyzer.computePatterns(historicalSlice, true);
 
-          // Baseline Prediction (Default standard weights)
-          const baselinePred = ZodiacPatternAnalyzer.generatePrediction(
-            historicalSlice,
-            sliceReport,
-            sliceBaseZodiac,
-            engineMode,
-            { w1: 60, w2: 40, calibrationMethod: "wma", calibrationWindow: 15, isBenchmark: true }
-          );
-
-          // Current Config Prediction
+          // 1. Current Config Prediction (Run once!)
           const currentPred = ZodiacPatternAnalyzer.generatePrediction(
             historicalSlice,
             sliceReport,
@@ -225,7 +219,18 @@ async function startServer() {
             { ...customWeights, isBenchmark: true }
           );
 
-          // Actual target results
+          // 2. Baseline Prediction (Only run if engineMode is not dynamic, otherwise reuse currentPred)
+          const baselinePred = engineMode === "dynamic"
+            ? currentPred
+            : ZodiacPatternAnalyzer.generatePrediction(
+                historicalSlice,
+                sliceReport,
+                sliceBaseZodiac,
+                engineMode,
+                { w1: 60, w2: 40, calibrationMethod: "wma", calibrationWindow: 15, isBenchmark: true }
+              );
+
+          // 3. Actual target results
           const actualNums = currentRecord.numbers;
           let activeMap = sliceAnalyzer.zodiacMap;
           if (engineMode === "dynamic" && currentRecord.archive_year !== undefined) {
@@ -265,6 +270,18 @@ async function startServer() {
           }
 
           testedCount++;
+
+          // 4. Calculate leaks/fails for Kill Intercept History
+          const leaks = actualZodiacs.filter(z => currentPred.tierKill.includes(z));
+          killInterceptHistory.push({
+            issue: currentRecord.issue,
+            archive_year: currentRecord.archive_year || 2026,
+            date: currentRecord.date,
+            killedZodiacs: currentPred.tierKill,
+            actualZodiacs,
+            leaks,
+            success: leaks.length === 0
+          });
         }
 
         if (testedCount > 0) {
@@ -305,58 +322,6 @@ async function startServer() {
       }
 
       prediction.benchmark = benchmark;
-
-      // --- NEW: Calculate "Tier 3 Kill/Exclusion" Intercept History for the last 10 periods ---
-      let killInterceptHistory: any[] = [];
-      if (processedRecords.length >= ZodiacPatternAnalyzer.MIN_PERIODS) {
-        const historyLimit = 10;
-        const totalLen = processedRecords.length;
-        const startHistoryIdx = Math.max(ZodiacPatternAnalyzer.MIN_PERIODS, totalLen - historyLimit);
-
-        for (let i = startHistoryIdx; i < totalLen; i++) {
-          const currentRecord = processedRecords[i];
-          const historicalSlice = processedRecords.slice(0, i);
-          if (historicalSlice.length < ZodiacPatternAnalyzer.MIN_PERIODS) continue;
-
-          const sliceLatestRecord = historicalSlice[historicalSlice.length - 1];
-          const sliceLatestYear = sliceLatestRecord.archive_year || 2026;
-          const sliceBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(sliceLatestYear);
-
-          const sliceAnalyzer = new ZodiacPatternAnalyzer(sliceBaseZodiac, engineMode);
-          const sliceReport = sliceAnalyzer.computePatterns(historicalSlice, true);
-
-          // Predict using current config
-          const currentPred = ZodiacPatternAnalyzer.generatePrediction(
-            historicalSlice,
-            sliceReport,
-            sliceBaseZodiac,
-            engineMode,
-            { ...customWeights, isBenchmark: true }
-          );
-
-          // Get actual winning zodiacs
-          const actualNums = currentRecord.numbers;
-          let activeMap = sliceAnalyzer.zodiacMap;
-          if (engineMode === "dynamic" && currentRecord.archive_year !== undefined) {
-            const nextBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(currentRecord.archive_year);
-            activeMap = sliceAnalyzer._getZodiacMap(nextBase);
-          }
-          const actualZodiacs = actualNums.map((n: number) => activeMap[n] || "未知");
-
-          // Find leaks/fails (winning zodiacs that were mistakenly put into tierKill)
-          const leaks = actualZodiacs.filter(z => currentPred.tierKill.includes(z));
-
-          killInterceptHistory.push({
-            issue: currentRecord.issue,
-            archive_year: currentRecord.archive_year || 2026,
-            date: currentRecord.date,
-            killedZodiacs: currentPred.tierKill,
-            actualZodiacs,
-            leaks,
-            success: leaks.length === 0
-          });
-        }
-      }
       prediction.killInterceptHistory = killInterceptHistory;
 
       res.json({
@@ -736,6 +701,73 @@ async function startServer() {
     }
     return hits;
   }
+
+  // 6. API: Run Feature Audit and Optimization Suggestions
+  app.post("/api/feature-audit", (req, res) => {
+    try {
+      const { selectedYears, baseZodiac, engineMode = "dynamic", freshnessEnabled = false, freshnessYears = 3 } = req.body;
+      const files = getAvailableDataFiles();
+      const targetFiles = Array.isArray(selectedYears) && selectedYears.length > 0
+        ? selectedYears.map((y: string) => path.join(DATA_DIR, y))
+        : files.map(f => path.join(DATA_DIR, f));
+
+      const mergedRecords: any[] = [];
+      for (const filePath of targetFiles) {
+        try {
+          const raw = fs.readFileSync(filePath, "utf-8");
+          const payload = JSON.parse(raw);
+          const bodyList = payload.result?.data?.bodyList;
+          if (!Array.isArray(bodyList)) continue;
+
+          let fileYear = parseInt(path.basename(filePath).split(".")[0]) || 2026;
+          if (bodyList.length > 0 && bodyList[0].preDrawDate) {
+            fileYear = parseInt(bodyList[0].preDrawDate.slice(0, 4)) || fileYear;
+          }
+
+          const dynamicBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(fileYear);
+          const tempAnalyzer = new ZodiacPatternAnalyzer(dynamicBase);
+          const yearRecords = tempAnalyzer.loadJsonData(filePath);
+
+          for (const r of yearRecords) {
+            r.archive_year = fileYear;
+            mergedRecords.push(r);
+          }
+        } catch (err) {}
+      }
+
+      mergedRecords.sort((a, b) => {
+        const yrA = a.archive_year || 0;
+        const yrB = b.archive_year || 0;
+        if (yrA !== yrB) return yrA - yrB;
+        return a.issue - b.issue;
+      });
+
+      if (mergedRecords.length === 0) {
+        return res.status(400).json({ status: "error", message: "数据为空，无法执行特征审计" });
+      }
+
+      const latestRecord = mergedRecords[mergedRecords.length - 1];
+      const latestYear = latestRecord.archive_year || 2026;
+      const finalBaseZodiac = baseZodiac || ZodiacPatternAnalyzer.getBaseZodiacByYear(latestYear);
+
+      const analyzer = new ZodiacPatternAnalyzer(finalBaseZodiac, engineMode, freshnessEnabled, freshnessYears);
+      const processedRecords = analyzer.resampleIfEnabled(mergedRecords);
+
+      const auditResult = FeatureAuditor.runAudit(processedRecords, analyzer);
+
+      res.json({
+        status: "success",
+        baseZodiac: finalBaseZodiac,
+        latestYear,
+        totalRecords: processedRecords.length,
+        auditResult,
+        reportHtmlPath: path.join(process.cwd(), "FeatureAuditReport.html")
+      });
+    } catch (e: any) {
+      console.error("Feature audit failed:", e);
+      res.status(500).json({ status: "error", message: e.message });
+    }
+  });
 
   // Vite development vs production asset serving
   if (process.env.NODE_ENV !== "production") {

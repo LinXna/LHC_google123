@@ -16,6 +16,7 @@ import { SmartPredictorSection } from "./components/SmartPredictorSection";
 import { BacktestSimulatorSection } from "./components/BacktestSimulatorSection";
 import { PerformanceMonitorPanel } from "./components/PerformanceMonitorPanel";
 import { SpecModuleSection } from "./components/SpecModuleSection";
+import { FeatureAuditSection } from "./components/FeatureAuditSection";
 import { AnalyzerReport, PredictionResult } from "./types.js";
 
 function App() {
@@ -95,6 +96,13 @@ function App() {
     const fetchYears = async () => {
       try {
         const res = await fetch("/api/years");
+        if (!res.ok) {
+          throw new Error(`HTTP 错误！状态码: ${res.status}`);
+        }
+        const contentType = res.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("服务器未返回 JSON 格式。");
+        }
         const data = await res.json();
         if (data.status === "success") {
           // Keep years descending so recent years are on top!
@@ -245,6 +253,13 @@ function App() {
           freshnessYears: appliedFreshnessYears,
         }),
       });
+      if (!res.ok) {
+        throw new Error(`分析服务返回错误 (状态码: ${res.status})`);
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("分析服务响应不是合法的 JSON 格式。服务可能正在重新启动或离线。");
+      }
       const data = await res.json();
       if (data.status === "success") {
         let currentBaseZodiac = appliedBaseZodiac;
@@ -283,6 +298,13 @@ function App() {
             freshnessYears: appliedFreshnessYears,
           }),
         });
+        if (!predRes.ok) {
+          throw new Error(`预测服务返回错误 (状态码: ${predRes.status})`);
+        }
+        const predContentType = predRes.headers.get("content-type");
+        if (!predContentType || !predContentType.includes("application/json")) {
+          throw new Error("预测服务响应不是合法的 JSON 格式。");
+        }
         const predData = await predRes.json();
         if (predData.status === "success") {
           setReport(data.report);
@@ -348,6 +370,13 @@ function App() {
           freshnessYears: appliedFreshnessYears
         }),
       });
+      if (!res.ok) {
+        throw new Error(`预测服务返回错误 (状态码: ${res.status})`);
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("预测服务响应不是合法的 JSON 格式。服务可能正在重新启动。");
+      }
       const data = await res.json();
       if (data.status === "success") {
         setPrediction(data.prediction);
@@ -449,6 +478,21 @@ function App() {
             >
               <History className="w-3.5 h-3.5" />
               穿透回测
+            </button>
+            <button
+              onClick={() => appliedYears.length > 0 && setActiveTab("audit")}
+              disabled={appliedYears.length === 0}
+              className={`px-3.5 py-1.5 text-xs font-semibold rounded-lg transition-all flex items-center gap-1.5 ${
+                appliedYears.length === 0
+                  ? "text-slate-600 cursor-not-allowed opacity-40"
+                  : activeTab === "audit"
+                  ? "bg-indigo-600 text-white shadow-xs cursor-pointer"
+                  : "text-slate-300 hover:text-white hover:bg-slate-700 cursor-pointer"
+              }`}
+              title={appliedYears.length === 0 ? "请先选择数据年份并确认应用参数" : "特征审计舱"}
+            >
+              <GitMerge className="w-3.5 h-3.5" />
+              特征审计舱
             </button>
           </div>
         </div>
@@ -607,6 +651,19 @@ function App() {
           <div className="space-y-8">
             <BacktestSimulatorSection
               years={years}
+              selectedYears={appliedYears}
+              baseZodiac={appliedBaseZodiac}
+              engineMode={appliedEngineMode}
+              freshnessEnabled={appliedFreshnessEnabled}
+              freshnessYears={appliedFreshnessYears}
+            />
+          </div>
+        )}
+
+        {/* Tab 5: Feature Audit Section */}
+        {activeTab === "audit" && (
+          <div className="space-y-8">
+            <FeatureAuditSection
               selectedYears={appliedYears}
               baseZodiac={appliedBaseZodiac}
               engineMode={appliedEngineMode}

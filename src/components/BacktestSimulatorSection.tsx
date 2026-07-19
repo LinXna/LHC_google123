@@ -489,6 +489,13 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
         }),
       });
 
+      if (!response.ok) {
+        throw new Error(`回测服务返回错误 (状态码: ${response.status})`);
+      }
+      const contentType = response.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("回测服务响应不是合法的 JSON 格式。服务可能正在重新启动。");
+      }
       const data = await response.json();
       if (data.status === "success") {
         setResult(data);
@@ -544,6 +551,13 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
           signal: controller.signal,
         });
 
+        if (!listRes.ok) {
+          throw new Error(`获取年度开奖期数错误 (状态码: ${listRes.status})`);
+        }
+        const contentType = listRes.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("年度索引响应不是合法的 JSON 格式。服务可能正在重新启动。");
+        }
         const listData = await listRes.json();
         if (!listData.issues || listData.issues.length === 0) {
           throw new Error("未加载到任何 2026 年度开奖期数索引。请检查本地 /data/2026.json 文件完整性。");
@@ -714,6 +728,13 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
         signal: controller.signal,
       });
 
+      if (!listRes.ok) {
+        throw new Error(`获取对比年度期数错误 (状态码: ${listRes.status})`);
+      }
+      const contentType = listRes.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("对比索引响应不是合法的 JSON 格式。服务可能正在重新启动。");
+      }
       const listData = await listRes.json();
       if (!listData.issues || listData.issues.length === 0) {
         throw new Error("未加载到任何 2026 年度期数。");

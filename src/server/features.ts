@@ -44,6 +44,7 @@ export class FeatureRepository {
  */
 export class FeatureCollector {
   private repository: FeatureRepository;
+  private static cache = new Map<string, FeatureResult[]>();
 
   constructor(repository: FeatureRepository) {
     this.repository = repository;
@@ -58,12 +59,25 @@ export class FeatureCollector {
     analyzer: ZodiacPatternAnalyzer,
     customWeights?: any
   ): FeatureResult[] {
+    const lastRecord = records[targetIdx];
+    if (!lastRecord) return [];
+    const issue = lastRecord.issue;
+    const calibrationMethod = customWeights?.calibrationMethod || "wma";
+    const calibrationWindow = customWeights?.calibrationWindow !== undefined ? customWeights.calibrationWindow : 15;
+    const kalmanQ = customWeights?.kalmanQ !== undefined ? customWeights.kalmanQ : 0.01;
+    const kalmanR = customWeights?.kalmanR !== undefined ? customWeights.kalmanR : 0.1;
+
+    const cacheKey = `${issue}_${analyzer.engineMode}_${calibrationMethod}_${calibrationWindow}_${kalmanQ}_${kalmanR}`;
+    if (FeatureCollector.cache.has(cacheKey)) {
+      const cached = FeatureCollector.cache.get(cacheKey)!;
+      this.repository.addFeatures(cached);
+      return cached;
+    }
+
     const slice = records.slice(0, targetIdx + 1);
     const report = analyzer.computePatterns(slice, true);
     
     // We run the core feature generation logic for this target period
-    const lastRecord = slice[slice.length - 1];
-    const issue = lastRecord.issue;
     const zodiacOrder = analyzer.zodiacOrder;
     const numToZodiac = analyzer.zodiacMap;
 
@@ -98,11 +112,6 @@ export class FeatureCollector {
       }
       matrixForCalibration.push(rec.numbers.map(n => zm[n] || "未知"));
     }
-
-    const calibrationMethod = customWeights?.calibrationMethod || "wma";
-    const calibrationWindow = customWeights?.calibrationWindow !== undefined ? customWeights.calibrationWindow : 15;
-    const kalmanQ = customWeights?.kalmanQ !== undefined ? customWeights.kalmanQ : 0.01;
-    const kalmanR = customWeights?.kalmanR !== undefined ? customWeights.kalmanR : 0.1;
 
     let calibratedRates: Record<string, number>;
     if (calibrationMethod === "kalman") {
@@ -180,40 +189,49 @@ export class FeatureCollector {
 
     const scanStart = Math.min(50, Math.floor(M / 4));
     const samples: any[] = [];
-    for (let t = scanStart; t < M; t++) {
+    const runningOmission: Record<string, number> = {};
+    const runningConsecutive: Record<string, number> = {};
+    for (const z of zodiacOrder) {
+      runningOmission[z] = 0;
+      runningConsecutive[z] = 0;
+    }
+
+    for (let t = 0; t < M; t++) {
       const openedSet = new Set(matrixForCalibration[t]);
+      if (t >= scanStart) {
+        for (const z of zodiacOrder) {
+          const o = runningOmission[z];
+          const d = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 5)];
+          const c = runningConsecutive[z];
+          const lt = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 50)];
+          const openedAtT = openedSet.has(z);
+          const killedAtT = !openedAtT;
+
+          if (killedAtT) baselineKills++;
+          const oBin = getOBin(o);
+          omissionTotal[oBin]++;
+          if (killedAtT) omissionKills[oBin]++;
+          densityTotal[d]++;
+          if (killedAtT) densityKills[d]++;
+          const cBin = getCBin(c);
+          consecutiveTotal[cBin]++;
+          if (killedAtT) consecutiveKills[cBin]++;
+          const ltBin = getLTBin(lt);
+          ltTotal[ltBin]++;
+          if (killedAtT) ltKills[ltBin]++;
+
+          samples.push({ z, oBin, dBin: d, cBin, ltBin, label: killedAtT ? 1 : 0 });
+        }
+      }
+      // Update running counters for the next period
       for (const z of zodiacOrder) {
-        // Calculate omission at t
-        let o = 0;
-        for (let prev = t - 1; prev >= 0; prev--) {
-          if (matrixForCalibration[prev].includes(z)) break;
-          o++;
+        if (openedSet.has(z)) {
+          runningOmission[z] = 0;
+          runningConsecutive[z] = runningConsecutive[z] + 1;
+        } else {
+          runningOmission[z] = runningOmission[z] + 1;
+          runningConsecutive[z] = 0;
         }
-        const d = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 5)];
-        // Calculate consecutive at t
-        let c = 0;
-        for (let prev = t - 1; prev >= 0; prev--) {
-          if (!matrixForCalibration[prev].includes(z)) break;
-          c++;
-        }
-        const lt = prefixSum[z][t] - prefixSum[z][Math.max(0, t - 50)];
-        const openedAtT = openedSet.has(z);
-        const killedAtT = !openedAtT;
-
-        if (killedAtT) baselineKills++;
-        const oBin = getOBin(o);
-        omissionTotal[oBin]++;
-        if (killedAtT) omissionKills[oBin]++;
-        densityTotal[d]++;
-        if (killedAtT) densityKills[d]++;
-        const cBin = getCBin(c);
-        consecutiveTotal[cBin]++;
-        if (killedAtT) consecutiveKills[cBin]++;
-        const ltBin = getLTBin(lt);
-        ltTotal[ltBin]++;
-        if (killedAtT) ltKills[ltBin]++;
-
-        samples.push({ z, oBin, dBin: d, cBin, ltBin, label: killedAtT ? 1 : 0 });
       }
     }
 
@@ -291,6 +309,47 @@ export class FeatureCollector {
 
     const featureResults: FeatureResult[] = [];
 
+    // Precalculate F2 combination statistics once for all zodiacs in this period (12x faster!)
+    const f2ComboVetoByZodiac: Record<string, { isComboVeto: number; smoothedVetoProb: number }> = {};
+    for (const z of zodiacOrder) {
+      f2ComboVetoByZodiac[z] = { isComboVeto: 0, smoothedVetoProb: 0 };
+    }
+
+    const lastZArray = Array.from(lastZSet).sort();
+    const rowSets = matrixForCalibration.map(row => new Set(row));
+
+    for (let subsetSize = 1; subsetSize <= 4; subsetSize++) {
+      const combos = ZodiacPatternAnalyzer.getCombinations(lastZArray, subsetSize);
+      for (const combo of combos) {
+        let totalMatch = 0;
+        const nextPeriodCounts: Record<string, number> = {};
+        for (const zo of zodiacOrder) nextPeriodCounts[zo] = 0;
+
+        for (let i = 0; i < matrixForCalibration.length - 1; i++) {
+          const rowSet = rowSets[i];
+          const containsAll = combo.every(item => rowSet.has(item));
+          if (containsAll) {
+            totalMatch++;
+            for (const zo of matrixForCalibration[i + 1]) {
+              nextPeriodCounts[zo]++;
+            }
+          }
+        }
+
+        if (totalMatch >= 3) {
+          const pSmoothed = (totalMatch + 0.25) / (totalMatch + 3);
+          if (pSmoothed >= 0.60) {
+            for (const zo of zodiacOrder) {
+              if (nextPeriodCounts[zo] === 0) {
+                f2ComboVetoByZodiac[zo].isComboVeto = 1;
+                f2ComboVetoByZodiac[zo].smoothedVetoProb = Math.max(f2ComboVetoByZodiac[zo].smoothedVetoProb, pSmoothed);
+              }
+            }
+          }
+        }
+      }
+    }
+
     // Construct features for each zodiac for period T
     for (const z of zodiacOrder) {
       const o = currentOmission[z] || 0;
@@ -340,33 +399,8 @@ export class FeatureCollector {
       featureResults.push({ featureName: "zodiac_analyzer_score", value: f1Score, zodiac: z, issue, metadata: { reasons } });
 
       // 4. Laplace Smoothed Joint Sub-Kills (F2 Combination Sub-Kills)
-      let isComboVeto = 0;
-      let smoothedVetoProb = 0;
-      const lastZArray = Array.from(lastZSet).sort();
-      for (let subsetSize = 1; subsetSize <= 4; subsetSize++) {
-        const combos = ZodiacPatternAnalyzer.getCombinations(lastZArray, subsetSize);
-        for (const combo of combos) {
-          let totalMatch = 0;
-          const nextPeriodCounts: Record<string, number> = {};
-          for (const zo of zodiacOrder) nextPeriodCounts[zo] = 0;
-          for (let i = 0; i < matrixForCalibration.length - 1; i++) {
-            const row = matrixForCalibration[i];
-            const rowSet = new Set(row);
-            const containsAll = combo.every(item => rowSet.has(item));
-            if (containsAll) {
-              totalMatch++;
-              for (const zo of matrixForCalibration[i + 1]) nextPeriodCounts[zo]++;
-            }
-          }
-          if (totalMatch >= 3 && nextPeriodCounts[z] === 0) {
-            const pSmoothed = (totalMatch + 0.25) / (totalMatch + 3);
-            if (pSmoothed >= 0.60) {
-              isComboVeto = 1;
-              smoothedVetoProb = Math.max(smoothedVetoProb, pSmoothed);
-            }
-          }
-        }
-      }
+      const isComboVeto = f2ComboVetoByZodiac[z].isComboVeto;
+      const smoothedVetoProb = f2ComboVetoByZodiac[z].smoothedVetoProb;
       featureResults.push({ featureName: "f2_combo_veto", value: isComboVeto, zodiac: z, issue, metadata: { smoothedVetoProb } });
 
       // 5. Gap Recovery (F5) features
@@ -398,6 +432,7 @@ export class FeatureCollector {
     }
 
     this.repository.addFeatures(featureResults);
+    FeatureCollector.cache.set(cacheKey, featureResults);
     return featureResults;
   }
 }
@@ -523,7 +558,7 @@ export class FeatureDatasetBuilder {
  * Phase 11: PredictionModel interface.
  */
 export interface PredictionModel {
-  predict(repository: FeatureRepository, issue: number, baseAnalyzer: ZodiacPatternAnalyzer, customWeights?: any): PredictionResult;
+  predict(repository: FeatureRepository, issue: number, baseAnalyzer: ZodiacPatternAnalyzer, customWeights?: any, passedRecords?: any[]): PredictionResult;
 }
 
 /**
@@ -531,7 +566,7 @@ export interface PredictionModel {
  * delegating predictions to our robust V2.5 Decision Engine via CurrentRecommendationAdapter.
  */
 export class CurrentPredictionModel implements PredictionModel {
-  public predict(repository: FeatureRepository, issue: number, baseAnalyzer: ZodiacPatternAnalyzer, customWeights?: any): PredictionResult {
+  public predict(repository: FeatureRepository, issue: number, baseAnalyzer: ZodiacPatternAnalyzer, customWeights?: any, passedRecords?: any[]): PredictionResult {
     const adapter = new CurrentRecommendationAdapter(repository);
     return adapter.reconstructPrediction(issue, baseAnalyzer, customWeights);
   }
@@ -631,34 +666,43 @@ export class PredictionPipeline {
     const latestRecord = records[totalPeriods - 1];
     const issue = latestRecord.issue;
 
-    // 1. Run Scanners & Extract Features
-    this.collector.collect(records, totalPeriods - 1, analyzer, customWeights);
+    const isBenchmark = customWeights?.isBenchmark === true || customWeights?.isBacktest === true;
+
+    // 1. Collect features for the historical periods + target period BEFORE prediction!
+    // We collect recent 25 periods. Thanks to static feature cache, subsequent runs take 0ms!
+    const startCollectIdx = Math.max(0, totalPeriods - 25);
+    for (let i = startCollectIdx; i < totalPeriods; i++) {
+      this.collector.collect(records, i, analyzer, customWeights);
+    }
 
     // 2. Perform Feature Validation / Audit
-    const auditRes = FeatureAudit.audit(this.repository, issue, analyzer.zodiacOrder);
-    if (!auditRes.ok) {
-      console.warn(`[PredictionPipeline] Feature audit warnings:\n${auditRes.anomalies.join("\n")}`);
+    if (!isBenchmark) {
+      const auditRes = FeatureAudit.audit(this.repository, issue, analyzer.zodiacOrder);
+      if (!auditRes.ok) {
+        console.warn(`[PredictionPipeline] Feature audit warnings:\n${auditRes.anomalies.join("\n")}`);
+      }
     }
 
     // 3. Dump current period features as CSV
-    this.datasetBuilder.dumpPeriodFeatures(issue, analyzer.zodiacOrder);
+    if (!isBenchmark) {
+      this.datasetBuilder.dumpPeriodFeatures(issue, analyzer.zodiacOrder);
+    }
 
-    // 4. Model Prediction
-    const prediction = this.model.predict(this.repository, issue, analyzer, customWeights);
+    // 4. Model Prediction (now trained with complete, rich historical samples!)
+    const prediction = this.model.predict(this.repository, issue, analyzer, customWeights, records);
 
     // 5. Save Prediction Snapshot
-    PredictionSnapshot.saveSnapshot(issue, prediction);
+    if (!isBenchmark) {
+      PredictionSnapshot.saveSnapshot(issue, prediction);
+    }
 
     // 6. Optionally build the complete historical dataset
-    try {
-      // Collect features for historical periods to populate the dataset
-      const startCollectIdx = Math.max(0, totalPeriods - 25); // collect recent 25 periods to keep it snappy!
-      for (let i = startCollectIdx; i < totalPeriods - 1; i++) {
-        this.collector.collect(records, i, analyzer, customWeights);
+    if (!isBenchmark) {
+      try {
+        this.datasetBuilder.buildDataset(records, analyzer);
+      } catch (e) {
+        console.error("Failed to build historical dataset:", e);
       }
-      this.datasetBuilder.buildDataset(records, analyzer);
-    } catch (e) {
-      console.error("Failed to build historical dataset:", e);
     }
 
     return prediction;

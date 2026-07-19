@@ -533,20 +533,35 @@ export class ZodiacPatternAnalyzer {
         }
       }
 
-      const currZList = Array.from(currZSet).sort();
-      const pairs = ZodiacPatternAnalyzer.getCombinations(currZList, 2);
-      for (const pair of pairs) {
-        const condKey = `(${currDiv}, ('${pair[0]}', '${pair[1]}'))`;
-        if (!isBacktest || activePairKeys.has(condKey)) {
+      if (isBacktest) {
+        // High-performance path for backtesting: bypass generating combinations for all records.
+        // Instead, just verify which of the active pairs/triplets are subsets of currZSet.
+        for (const pair of latestPairs) {
+          if (currZSet.has(pair[0]) && currZSet.has(pair[1])) {
+            const condKey = `(${latestDiv}, ('${pair[0]}', '${pair[1]}'))`;
+            if (!rule1PairDetail[condKey]) rule1PairDetail[condKey] = [];
+            rule1PairDetail[condKey].push(...nextZList);
+          }
+        }
+        for (const triplet of latestTriplets) {
+          if (currZSet.has(triplet[0]) && currZSet.has(triplet[1]) && currZSet.has(triplet[2])) {
+            const condKey = `(${latestDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`;
+            if (!rule1TripletDetail[condKey]) rule1TripletDetail[condKey] = [];
+            rule1TripletDetail[condKey].push(...nextZList);
+          }
+        }
+      } else {
+        const currZList = Array.from(currZSet).sort();
+        const pairs = ZodiacPatternAnalyzer.getCombinations(currZList, 2);
+        for (const pair of pairs) {
+          const condKey = `(${currDiv}, ('${pair[0]}', '${pair[1]}'))`;
           if (!rule1PairDetail[condKey]) rule1PairDetail[condKey] = [];
           rule1PairDetail[condKey].push(...nextZList);
         }
-      }
 
-      const triplets = ZodiacPatternAnalyzer.getCombinations(currZList, 3);
-      for (const triplet of triplets) {
-        const condKey = `(${currDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`;
-        if (!isBacktest || activeTripletKeys.has(condKey)) {
+        const triplets = ZodiacPatternAnalyzer.getCombinations(currZList, 3);
+        for (const triplet of triplets) {
+          const condKey = `(${currDiv}, ('${triplet[0]}', '${triplet[1]}', '${triplet[2]}'))`;
           if (!rule1TripletDetail[condKey]) rule1TripletDetail[condKey] = [];
           rule1TripletDetail[condKey].push(...nextZList);
         }
@@ -710,20 +725,25 @@ export class ZodiacPatternAnalyzer {
     // =========================================================================
     // 3. 基础伴生矩阵
     // =========================================================================
+    let top15Pairs: any[] = [];
+    let bottom15Pairs: any[] = [];
     const pairPeriodDist: Record<string, number> = {};
-    for (const g of zodiacMatrix) {
-      const uniqueZ = Array.from(new Set(g)).sort();
-      const pairs = ZodiacPatternAnalyzer.getCombinations(uniqueZ, 2);
-      for (const pair of pairs) {
-        const pKey = `${pair[0]}-${pair[1]}`;
-        pairPeriodDist[pKey] = (pairPeriodDist[pKey] || 0) + 1;
-      }
-    }
 
-    const pairList = Object.entries(pairPeriodDist).map(([p, freq]) => [p, freq, freq / totalPeriods] as [string, number, number]);
-    pairList.sort((a, b) => b[1] - a[1]);
-    const top15Pairs = pairList.slice(0, 15);
-    const bottom15Pairs = [...pairList].reverse().slice(0, 15);
+    if (!isBacktest) {
+      for (const g of zodiacMatrix) {
+        const uniqueZ = Array.from(new Set(g)).sort();
+        const pairs = ZodiacPatternAnalyzer.getCombinations(uniqueZ, 2);
+        for (const pair of pairs) {
+          const pKey = `${pair[0]}-${pair[1]}`;
+          pairPeriodDist[pKey] = (pairPeriodDist[pKey] || 0) + 1;
+        }
+      }
+
+      const pairList = Object.entries(pairPeriodDist).map(([p, freq]) => [p, freq, freq / totalPeriods] as [string, number, number]);
+      pairList.sort((a, b) => b[1] - a[1]);
+      top15Pairs = pairList.slice(0, 15);
+      bottom15Pairs = [...pairList].reverse().slice(0, 15);
+    }
 
     // =========================================================================
     // 4. 微观强力杀号过滤器
@@ -2331,7 +2351,7 @@ export class ZodiacPatternAnalyzer {
     
     let activeNumToZodiac = numToZodiac;
     if (engineMode === "dynamic" && lastRecord.archive_year !== undefined) {
-      const lastBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(lastRecord.archive_year);
+      const lastBase = ZodiacPatternAnalyzer.getBaseZodiacByYear(lastRecord.archive_year as number);
       activeNumToZodiac = analyzer._getZodiacMap(lastBase);
     }
 
@@ -2348,16 +2368,17 @@ export class ZodiacPatternAnalyzer {
       const yr = rec.archive_year;
       let zm = numToZodiac;
       if (engineMode === "dynamic" && yr !== undefined && yr !== null) {
-        const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(yr);
+        const base = ZodiacPatternAnalyzer.getBaseZodiacByYear(yr as number);
         zm = analyzer._getZodiacMap(base);
       }
       matrixForCalibration.push(rec.numbers.map(n => zm[n] || "未知"));
     }
 
-    const calibrationMethod = customWeights?.calibrationMethod || "wma";
-    const calibrationWindow = customWeights?.calibrationWindow !== undefined ? customWeights.calibrationWindow : 15;
-    const kalmanQ = customWeights?.kalmanQ !== undefined ? customWeights.kalmanQ : 0.01;
-    const kalmanR = customWeights?.kalmanR !== undefined ? customWeights.kalmanR : 0.1;
+    const weights: any = customWeights || {};
+    const calibrationMethod = weights.calibrationMethod || "wma";
+    const calibrationWindow = weights.calibrationWindow !== undefined ? weights.calibrationWindow : 15;
+    const kalmanQ = weights.kalmanQ !== undefined ? weights.kalmanQ : 0.01;
+    const kalmanR = weights.kalmanR !== undefined ? weights.kalmanR : 0.1;
 
     let calibratedRates: Record<string, number>;
     if (calibrationMethod === "kalman") {
@@ -2371,8 +2392,8 @@ export class ZodiacPatternAnalyzer {
       for (const z of zodiacOrder) calibratedRates[z] = 7 / 12; // default neutral probability
     }
 
-    let WEIGHT_RULE1 = customWeights?.w1 !== undefined ? customWeights.w1 : 0.60;
-    let WEIGHT_RULE2 = customWeights?.w2 !== undefined ? customWeights.w2 : 0.40;
+    let WEIGHT_RULE1 = weights.w1 !== undefined ? weights.w1 : 0.60;
+    let WEIGHT_RULE2 = weights.w2 !== undefined ? weights.w2 : 0.40;
 
     if (WEIGHT_RULE1 > 1.0) WEIGHT_RULE1 /= 100;
     if (WEIGHT_RULE2 > 1.0) WEIGHT_RULE2 /= 100;
@@ -2770,9 +2791,10 @@ export class ZodiacPatternAnalyzer {
     // =========================================================================
     // F1 升级：条件抑制与特定生肖互杀
     // =========================================================================
-    if (report.conditionalInhibitors) {
+    const inhibitors: any = report.conditionalInhibitors;
+    if (inhibitors) {
       for (const b of lastZSet) {
-        const aList = report.conditionalInhibitors[b];
+        const aList = inhibitors[b];
         if (aList && aList.length > 0) {
           for (const a of aList) {
             zodiacMultipliers[a] = (zodiacMultipliers[a] || 1.0) * 0.15; // 强力拉低
@@ -2787,8 +2809,13 @@ export class ZodiacPatternAnalyzer {
     // F2 升级：高阶多生肖自由组合 (Combinatorial Sub-Kills) Laplace 平滑 & 联合审计
     // =========================================================================
     const lastZArray = Array.from(lastZSet).sort();
-    // Test subsets of size 1 to 4 to avoid combinatoric explosion while remaining highly precise.
-    for (let subsetSize = 1; subsetSize <= 4; subsetSize++) {
+    // Pre-compute row Sets for extremely fast lookup, avoiding recreating Sets inside the nested loops
+    const calibrationRowSets = matrixForCalibration.map(row => new Set(row));
+    const isBenchmarkMode = customWeights?.isBenchmark === true;
+    const maxSubsetSize = isBenchmarkMode ? 2 : 4; // restrict to size 2 in benchmark mode to boost speed
+
+    // Test subsets of size 1 to maxSubsetSize to avoid combinatoric explosion while remaining highly precise.
+    for (let subsetSize = 1; subsetSize <= maxSubsetSize; subsetSize++) {
       const combos = ZodiacPatternAnalyzer.getCombinations(lastZArray, subsetSize);
       for (const combo of combos) {
         let totalMatch = 0;
@@ -2797,8 +2824,7 @@ export class ZodiacPatternAnalyzer {
         for (const z of zodiacOrder) nextPeriodCounts[z] = 0;
         
         for (let i = 0; i < matrixForCalibration.length - 1; i++) {
-          const row = matrixForCalibration[i];
-          const rowSet = new Set(row);
+          const rowSet = calibrationRowSets[i];
           // Check if row contains ALL elements of combo
           const containsAll = combo.every(item => rowSet.has(item));
           if (containsAll) {
@@ -2935,11 +2961,13 @@ export class ZodiacPatternAnalyzer {
     // =========================================================================
     // F6 & F7 频繁项集微调 (Micro-adjustments via FP-Growth lift and support)
     // =========================================================================
-    if (report.frequentPatterns) {
-      for (const pattern of report.frequentPatterns) {
-        if (pattern.rules && pattern.rules.length > 0) {
-          for (const rule of pattern.rules) {
-            const lhsInLast = rule.lhs.every(item => lastZSet.has(item));
+    const freqPatterns: any = report.frequentPatterns;
+    if (freqPatterns) {
+      for (const pattern of freqPatterns) {
+        const rules = pattern.rules;
+        if (rules && rules.length > 0) {
+          for (const rule of rules) {
+            const lhsInLast = rule.lhs.every((item: string) => lastZSet.has(item));
             if (lhsInLast) {
               const rhs = rule.rhs;
               zodiacMultipliers[rhs] = (zodiacMultipliers[rhs] || 1.0) * 1.05;
@@ -3100,7 +3128,7 @@ export class ZodiacPatternAnalyzer {
       // 1. Incorporate historical special-number bias (percentage)
       const specialBias = report.top_special_expanded?.find(item => item[0] === n);
       if (specialBias) {
-        score += specialBias[1] * 0.25; // Boost up to 25 points based on historical bias
+        score += (specialBias as any)[1] * 0.25; // Boost up to 25 points based on historical bias
       }
       
       numberScores[n] = score;
@@ -3120,7 +3148,7 @@ export class ZodiacPatternAnalyzer {
         const n1 = inRangeNums[0];
         const n2 = inRangeNums[1];
         const slotsCount = n2 - n1 - 1;
-        const r3Data = report.rule3_report ? report.rule3_report[rLabel] : null;
+        const r3Data = report.rule3_report?.[rLabel];
         if (r3Data && r3Data.slots && r3Data.slots[slotsCount]) {
           const sStat = r3Data.slots[slotsCount];
           const tot = sStat.total || 1;
@@ -3236,7 +3264,7 @@ export class ZodiacPatternAnalyzer {
         const n1 = inRangeNums[0];
         const n2 = inRangeNums[1];
         const slotsCount = n2 - n1 - 1;
-        const r3Data = report.rule3_report ? report.rule3_report[rLabel] : null;
+        const r3Data = report.rule3_report?.[rLabel];
         if (r3Data && r3Data.slots && r3Data.slots[slotsCount]) {
           const sStat = r3Data.slots[slotsCount];
           const tot = sStat.total || 1;

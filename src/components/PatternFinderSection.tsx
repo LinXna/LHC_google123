@@ -193,6 +193,13 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
           engineMode: engineMode,
         }),
       });
+      if (!res.ok) {
+        throw new Error(`分析服务返回错误 (状态码: ${res.status})`);
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        throw new Error("服务器未返回合法的 JSON 格式。服务可能正在启动中。");
+      }
       const data = await res.json();
       if (data.status === "success") {
         setLocalReport(data.report);
