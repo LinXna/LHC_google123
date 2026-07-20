@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { lazy, Suspense, useState, useEffect, useRef } from "react";
 import { 
   Database, 
   Compass, 
@@ -10,14 +10,15 @@ import {
   Award
 } from "lucide-react";
 import { DashboardOverview } from "./components/DashboardOverview";
-import { PatternFinderSection } from "./components/PatternFinderSection";
-import { CompanionAndGapsSection } from "./components/CompanionAndGapsSection";
-import { SmartPredictorSection } from "./components/SmartPredictorSection";
-import { BacktestSimulatorSection } from "./components/BacktestSimulatorSection";
 import { PerformanceMonitorPanel } from "./components/PerformanceMonitorPanel";
-import { SpecModuleSection } from "./components/SpecModuleSection";
-import { FeatureAuditSection } from "./components/FeatureAuditSection";
 import { AnalyzerReport, PredictionResult } from "./types.js";
+
+const PatternFinderSection = lazy(() => import("./components/PatternFinderSection").then(m => ({ default: m.PatternFinderSection })));
+const CompanionAndGapsSection = lazy(() => import("./components/CompanionAndGapsSection").then(m => ({ default: m.CompanionAndGapsSection })));
+const SmartPredictorSection = lazy(() => import("./components/SmartPredictorSection").then(m => ({ default: m.SmartPredictorSection })));
+const BacktestSimulatorSection = lazy(() => import("./components/BacktestSimulatorSection").then(m => ({ default: m.BacktestSimulatorSection })));
+const SpecModuleSection = lazy(() => import("./components/SpecModuleSection").then(m => ({ default: m.SpecModuleSection })));
+const FeatureAuditSection = lazy(() => import("./components/FeatureAuditSection").then(m => ({ default: m.FeatureAuditSection })));
 
 function App() {
   const [activeTab, setActiveTab] = useState<string>("dashboard");
@@ -108,9 +109,11 @@ function App() {
           // Keep years descending so recent years are on top!
           const sortedYears = [...data.years].sort((a: any, b: any) => b.year - a.year);
           setYears(sortedYears);
-          // 历史数据默认搜索2001年到2026年数据，更早的数据默认不选中，可以手动选择
+          // 2026样本外回测显示最近4年在精度和耗时之间表现最好。
+          // 使用动态最新年份，未来加入新年度数据后会自动向前滚动。
+          const latestYear = sortedYears[0]?.year ?? 2026;
           const defaultSelectFiles = sortedYears
-            .filter((y: any) => y.year >= 2001 && y.year <= 2026)
+            .filter((y: any) => y.year >= latestYear - 3 && y.year <= latestYear)
             .map((y: any) => y.filename);
           setSelectedYears(defaultSelectFiles);
           setAppliedYears(defaultSelectFiles);
@@ -241,7 +244,9 @@ function App() {
     const startTime = performance.now();
     setLoading(true);
     try {
-      const res = await fetch("/api/analyze", {
+      // The prediction endpoint also returns the analysis report, avoiding a
+      // second full history scan for the same parameters.
+      const res = await fetch("/api/predict", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: controller.signal,
@@ -249,16 +254,20 @@ function App() {
           selectedYears: appliedYears,
           baseZodiac: appliedBaseZodiac,
           engineMode: appliedEngineMode,
+          customWeights: {
+            deathBlowFilterEnabled: appliedDeathBlowFilterEnabled,
+            f5Enabled: appliedF5Enabled
+          },
           freshnessEnabled: appliedFreshnessEnabled,
           freshnessYears: appliedFreshnessYears,
         }),
       });
       if (!res.ok) {
-        throw new Error(`分析服务返回错误 (状态码: ${res.status})`);
+        throw new Error(`预测服务返回错误 (状态码: ${res.status})`);
       }
       const contentType = res.headers.get("content-type");
       if (!contentType || !contentType.includes("application/json")) {
-        throw new Error("分析服务响应不是合法的 JSON 格式。服务可能正在重新启动或离线。");
+        throw new Error("预测服务响应不是合法的 JSON 格式。服务可能正在重新启动或离线。");
       }
       const data = await res.json();
       if (data.status === "success") {
@@ -280,52 +289,23 @@ function App() {
             diversity: l.diversity
           };
         }
-        
-        // Fetch prediction using the same abort signal
-        const predRes = await fetch("/api/predict", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: controller.signal,
-          body: JSON.stringify({
-            selectedYears: appliedYears,
-            baseZodiac: currentBaseZodiac,
-            engineMode: appliedEngineMode,
-            customWeights: {
-              deathBlowFilterEnabled: appliedDeathBlowFilterEnabled,
-              f5Enabled: appliedF5Enabled
-            },
-            freshnessEnabled: appliedFreshnessEnabled,
-            freshnessYears: appliedFreshnessYears,
-          }),
-        });
-        if (!predRes.ok) {
-          throw new Error(`预测服务返回错误 (状态码: ${predRes.status})`);
-        }
-        const predContentType = predRes.headers.get("content-type");
-        if (!predContentType || !predContentType.includes("application/json")) {
-          throw new Error("预测服务响应不是合法的 JSON 格式。");
-        }
-        const predData = await predRes.json();
-        if (predData.status === "success") {
-          setReport(data.report);
-          setTotalRecords(data.totalRecords);
-          setLatestYear(data.latestYear);
-          if (lRecord) setLatestRecord(lRecord);
-          setPrediction(predData.prediction);
+        setReport(data.report);
+        setTotalRecords(data.totalRecords);
+        setLatestYear(data.latestYear);
+        if (lRecord) setLatestRecord(lRecord);
+        setPrediction(data.prediction);
 
-          // Store in local cache state
-          cacheRef.current[cacheKey] = {
-            report: data.report,
-            totalRecords: data.totalRecords,
-            latestYear: data.latestYear,
-            baseZodiac: currentBaseZodiac,
-            latestRecord: lRecord,
-            prediction: predData.prediction
-          };
+        cacheRef.current[cacheKey] = {
+          report: data.report,
+          totalRecords: data.totalRecords,
+          latestYear: data.latestYear,
+          baseZodiac: currentBaseZodiac,
+          latestRecord: lRecord,
+          prediction: data.prediction
+        };
 
-          const endTime = performance.now();
-          setCalcDuration(endTime - startTime);
-        }
+        const endTime = performance.now();
+        setCalcDuration(endTime - startTime);
       }
     } catch (err: any) {
       if (err.name === "AbortError") {
@@ -507,6 +487,11 @@ function App() {
           </div>
         )}
 
+        <Suspense fallback={(
+          <div className="bg-white border border-gray-200 rounded-2xl p-8 text-center text-sm text-gray-500 shadow-sm">
+            正在按需加载分析模块...
+          </div>
+        )}>
         {/* Tab 1: Dashboard Overview */}
         {activeTab === "dashboard" && (
           <div className="space-y-8">
@@ -641,6 +626,11 @@ function App() {
             <SmartPredictorSection
               prediction={prediction}
               loading={loading}
+              selectedYears={appliedYears}
+              baseZodiac={appliedBaseZodiac}
+              engineMode={appliedEngineMode}
+              freshnessEnabled={appliedFreshnessEnabled}
+              freshnessYears={appliedFreshnessYears}
               onRunPredict={handleRunPrediction}
             />
           </div>
@@ -672,6 +662,7 @@ function App() {
             />
           </div>
         )}
+        </Suspense>
       </main>
 
       {/* Footer */}

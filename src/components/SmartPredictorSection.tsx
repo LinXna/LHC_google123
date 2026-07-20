@@ -15,13 +15,65 @@ import {
   Zap,
   Sparkles,
   X,
-  ShieldAlert
+  ShieldAlert,
+  Eye,
+  History
 } from "lucide-react";
 import { PredictionResult } from "../types.js";
+
+interface WatchHistoryAudit {
+  summary: {
+    periods: number;
+    totalCandidates: number;
+    openedCandidates: number;
+    candidateOpenRate: number;
+    anyOpenPeriods: number;
+    anyOpenRate: number;
+    fullyAvoidedPeriods: number;
+    fullyAvoidedRate: number;
+  };
+  rows: Array<{
+    issue: number;
+    date: string;
+    watchedZodiacs: string[];
+    actualZodiacs: string[];
+    openedZodiacs: string[];
+    anyOpened: boolean;
+    displayed: boolean;
+    numericallySeparated: boolean;
+    watchSeparation: PredictionResult["watchSeparation"] | null;
+  }>;
+  separationAudit: {
+    numericallyQualifiedPeriods: number;
+    displayedPeriods: number;
+    suppressedPeriods: number;
+    numericallyQualified: WatchHistoryAudit["summary"];
+    displayed: WatchHistoryAudit["summary"];
+    suppressed: WatchHistoryAudit["summary"];
+  };
+  continuousValidation: {
+    throughIssue: number;
+    periods: number;
+    top3Precision: number;
+    precisionLiftVsRandom: number;
+    brierGain: number;
+    logLossGain: number;
+    signalPeriods: number;
+    rankingStable: boolean;
+    probabilityStable: boolean;
+    status: "stable_signal" | "keep_low_signal";
+  };
+  note: string;
+}
 
 interface SmartPredictorSectionProps {
   prediction: PredictionResult | null;
   loading: boolean;
+  selectedYears: string[];
+  baseZodiac: string;
+  engineMode: string;
+  freshnessEnabled: boolean;
+  freshnessYears: number;
   onRunPredict: (customWeights?: {
     w1?: number;
     w2?: number;
@@ -35,6 +87,11 @@ interface SmartPredictorSectionProps {
 export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
   prediction,
   loading,
+  selectedYears,
+  baseZodiac,
+  engineMode,
+  freshnessEnabled,
+  freshnessYears,
   onRunPredict,
 }) => {
   const [showConfig, setShowConfig] = useState<boolean>(false);
@@ -46,6 +103,9 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
   const [kalmanR, setKalmanR] = useState<number>(0.1);
   const [copied, setCopied] = useState<boolean>(false);
   const [dismissAlert, setDismissAlert] = useState<boolean>(false);
+  const [watchAudit, setWatchAudit] = useState<WatchHistoryAudit | null>(null);
+  const [watchAuditLoading, setWatchAuditLoading] = useState<boolean>(false);
+  const [watchAuditError, setWatchAuditError] = useState<string | null>(null);
 
   useEffect(() => {
     setDismissAlert(false);
@@ -70,12 +130,70 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
     }
   }, [prediction]);
 
+  useEffect(() => {
+    if (!prediction) {
+      setWatchAudit(null);
+      setWatchAuditError(null);
+      setWatchAuditLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setWatchAudit(null);
+    setWatchAuditError(null);
+    setWatchAuditLoading(true);
+    fetch("/api/watch-history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        year: Math.max(
+          2026,
+          ...selectedYears
+            .map(file => Number.parseInt(file.replace(".json", ""), 10))
+            .filter(year => Number.isInteger(year))
+        ),
+        latestIssue: prediction.latestIssue,
+        periods: 20,
+        selectedYears,
+        baseZodiac,
+        engineMode,
+        freshnessEnabled,
+        freshnessYears,
+        customWeights: {
+          w1: w1 / 100,
+          w2: w2 / 100,
+          calibrationMethod,
+          calibrationWindow,
+          kalmanQ,
+          kalmanR
+        }
+      })
+    })
+      .then(async response => {
+        const payload = await response.json();
+        if (!response.ok || payload.status !== "success") {
+          throw new Error(payload.message || "观察候选历史追踪失败");
+        }
+        return payload as WatchHistoryAudit & { status: string };
+      })
+      .then(payload => setWatchAudit(payload))
+      .catch(error => {
+        if (error.name !== "AbortError") setWatchAuditError(error.message || "观察候选历史追踪失败");
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setWatchAuditLoading(false);
+      });
+
+    return () => controller.abort();
+  }, [prediction, selectedYears, baseZodiac, engineMode, freshnessEnabled, freshnessYears]);
+
   if (loading && !prediction) {
     return (
       <div className="bg-white border border-gray-200 rounded-2xl p-8 shadow-sm text-center">
         <Compass className="w-10 h-10 animate-spin text-indigo-600 mx-auto mb-3" />
         <p className="text-sm font-semibold text-gray-700">正在调用智能推演引擎...</p>
-        <p className="text-xs text-gray-400 mt-1">深度匹配微观行为、100%绝杀拦截与多样性惯性重组对冲机制中...</p>
+        <p className="text-xs text-gray-400 mt-1">深度匹配微观行为、风险分层与多样性惯性重组对冲机制中...</p>
       </div>
     );
   }
@@ -114,7 +232,16 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
     text.push("【🔴 第一板块：生肖多梯度组合推荐】");
     text.push(`  🔥 核心精选生肖组合 (重磅主攻) : ${prediction.tierHot.map(z => `【${z}】`).join(", ")}`);
     text.push(`  ⚖️ 稳健防守生肖组合 (次要防守) : ${prediction.tierMid.map(z => `【${z}】`).join(", ")}`);
-    text.push(`  🛑 历史死穴绝杀生肖 (一键清除) : ${prediction.tierKill.map(z => `【${z}】`).join(", ")}`);
+    if (prediction.tierKill.length > 0) {
+      text.push(`  🛑 历史死穴绝杀生肖 (一键清除) : ${prediction.tierKill.map(z => `【${z}】`).join(", ")}`);
+    } else {
+      text.push("  🛡️ 历史死穴绝杀生肖 : 已由低信号保护关闭");
+    }
+    if ((prediction.tierWatch || []).length > 0) {
+      text.push(`  👁️ 低分观察候选 (不可绝杀) : ${(prediction.tierWatch || []).map(z => `【${z}】${prediction.scores[z] ?? 0}分`).join(", ")}`);
+    } else if (prediction.modelValidation?.watchCandidatesSuppressed) {
+      text.push(`  👁️ 低分观察候选 : 本期不展示（${prediction.watchSeparation?.reason || "末位边界分差不足"}）`);
+    }
     text.push("  --------------------------------------------------");
     text.push("  📊 评分细节参考 (Rule6已关闭，Rule1+多样性形态占权重60%) :");
     Object.entries(prediction.scores)
@@ -293,7 +420,7 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
 
                 <div>
                   <div className="flex justify-between text-[11px] text-gray-500 mb-1">
-                    <span>F2 (100%绝杀硬截线):</span>
+                    <span>F2 (历史排除风险线):</span>
                     <span className="font-mono font-bold text-indigo-600">{w2}%</span>
                   </div>
                   <input
@@ -756,6 +883,39 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
             </div>
           )}
 
+          {prediction.modelValidation?.killTierSuppressed && (
+            <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 p-3 flex items-start gap-2.5">
+              <ShieldAlert className="w-4.5 h-4.5 text-sky-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-bold text-sky-900">低信号保护已开启：绝杀推荐为空</div>
+                <p className="mt-0.5 text-[10.5px] leading-relaxed text-sky-800">
+                  下方末位生肖仅为相对低分观察候选，不参与绝杀拦截率，不可作为排除或投注依据。
+                </p>
+              </div>
+            </div>
+          )}
+
+          {prediction.modelValidation && !prediction.modelValidation.top3Reliable && (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 flex items-start gap-2.5">
+              <AlertTriangle className="w-4.5 h-4.5 text-amber-700 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-bold text-amber-900">Top‑3 跨窗口稳定性尚未达标</div>
+                <p className="mt-0.5 text-[10.5px] leading-relaxed text-amber-800">
+                  当前使用 {prediction.modelValidation.historyWindow ?? 75} 期动态记忆；主攻排序仅作研究观察，不应视为高置信推荐。
+                </p>
+              </div>
+            </div>
+          )}
+
+          {watchAudit?.continuousValidation && (
+            <div className="mb-4 rounded-xl border border-indigo-200 bg-indigo-50 p-3 text-[10.5px] leading-relaxed text-indigo-900">
+              自动持续验证截至第 {watchAudit.continuousValidation.throughIssue} 期：最近 {watchAudit.continuousValidation.periods} 期
+              Top‑3 命中率 {(watchAudit.continuousValidation.top3Precision * 100).toFixed(1)}%，
+              随机基线提升 {watchAudit.continuousValidation.precisionLiftVsRandom.toFixed(3)} 倍；
+              当前状态为{watchAudit.continuousValidation.status === "stable_signal" ? "稳定信号" : "继续低信号保护"}。
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
             <div className="border border-emerald-200 bg-emerald-50/55 rounded-2xl p-4">
               <div className="text-[11px] text-emerald-800 font-bold uppercase tracking-wider flex items-center gap-1">
@@ -793,24 +953,131 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
               </div>
             </div>
 
-            <div className="border border-rose-200 bg-rose-50/55 rounded-2xl p-4">
-              <div className="text-[11px] text-rose-800 font-bold uppercase tracking-wider flex items-center gap-1">
-                <ShieldX className="w-4 h-4 text-rose-600" />
-                死穴绝杀 (坚决清除)
-              </div>
-              <div className="flex flex-wrap gap-1.5 mt-2.5">
-                {prediction.tierKill.length > 0 ? (
-                  prediction.tierKill.map(z => (
+            {prediction.tierKill.length > 0 ? (
+              <div className="border border-rose-200 bg-rose-50/55 rounded-2xl p-4">
+                <div className="text-[11px] text-rose-800 font-bold uppercase tracking-wider flex items-center gap-1">
+                  <ShieldX className="w-4 h-4 text-rose-600" />
+                  死穴绝杀 (坚决清除)
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {prediction.tierKill.map(z => (
                     <span key={z} className="px-2 py-0.5 text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-200 rounded-md">
                       【{z}】
                     </span>
-                  ))
-                ) : (
-                  <span className="text-xs text-gray-400">无</span>
-                )}
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="border border-slate-200 bg-slate-50/80 rounded-2xl p-4">
+                <div className="text-[11px] text-slate-700 font-bold uppercase tracking-wider flex items-center gap-1">
+                  <ShieldAlert className="w-4 h-4 text-slate-600" />
+                  低分观察 (不可绝杀)
+                </div>
+                <div className="flex flex-wrap gap-1.5 mt-2.5">
+                  {(prediction.tierWatch || []).length > 0 ? (
+                    (prediction.tierWatch || []).map(z => (
+                      <span key={z} className="px-2 py-0.5 text-xs font-semibold bg-white text-slate-700 border border-slate-300 rounded-md">
+                        【{z}】 {prediction.scores[z] ?? 0}分
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs font-semibold text-slate-600">本期无法形成可靠低分观察组</span>
+                  )}
+                </div>
+                <p className="mt-2 text-[10px] leading-relaxed text-slate-500">
+                  {prediction.watchSeparation
+                    ? `${prediction.watchSeparation.reason}；边界分差 ${prediction.watchSeparation.boundaryGap.toFixed(2)} 分，整体标准差 ${prediction.watchSeparation.scoreStdDev.toFixed(2)} 分。`
+                    : "只反映模型内部相对排名，不代表不会开出。"}
+                </p>
+              </div>
+            )}
           </div>
+
+          {(prediction.tierWatchCandidates || prediction.tierWatch || []).length > 0 && (
+            <div className="mb-6 rounded-2xl border border-slate-200 bg-white overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 bg-slate-50/70 px-4 py-3">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                    <Eye className="w-4 h-4 text-slate-700" />
+                    低分观察候选历史风险追踪
+                  </h4>
+                  <p className="mt-0.5 text-[10px] text-slate-500">最近20期严格滚动回放，每期只使用开奖前数据。</p>
+                </div>
+                <span className="self-start sm:self-auto inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">
+                  <History className="w-3.5 h-3.5" />
+                  风险揭示，不是绝杀验证
+                </span>
+              </div>
+
+              {watchAuditLoading ? (
+                <div className="p-6 text-center">
+                  <Compass className="w-5 h-5 animate-spin text-slate-500 mx-auto" />
+                  <p className="mt-2 text-xs text-slate-500">正在后台回放最近20期观察候选...</p>
+                </div>
+              ) : watchAuditError ? (
+                <div className="m-4 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700">
+                  {watchAuditError}
+                </div>
+              ) : watchAudit ? (
+                <div className="p-4 space-y-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div className="text-[10px] font-bold text-slate-500">观察生肖实际开出率</div>
+                      <div className="mt-1 text-xl font-black font-mono text-slate-900">{(watchAudit.summary.candidateOpenRate * 100).toFixed(1)}%</div>
+                      <div className="text-[10px] text-slate-500">{watchAudit.summary.openedCandidates}/{watchAudit.summary.totalCandidates} 个候选实际开出</div>
+                    </div>
+                    <div className="rounded-xl border border-rose-200 bg-rose-50 p-3">
+                      <div className="text-[10px] font-bold text-rose-700">至少开出一肖的期数</div>
+                      <div className="mt-1 text-xl font-black font-mono text-rose-800">{(watchAudit.summary.anyOpenRate * 100).toFixed(1)}%</div>
+                      <div className="text-[10px] text-rose-700">{watchAudit.summary.anyOpenPeriods}/{watchAudit.summary.periods} 期发生观察候选开出</div>
+                    </div>
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+                      <div className="text-[10px] font-bold text-emerald-700">观察组全部避开</div>
+                      <div className="mt-1 text-xl font-black font-mono text-emerald-800">{(watchAudit.summary.fullyAvoidedRate * 100).toFixed(1)}%</div>
+                      <div className="text-[10px] text-emerald-700">仅 {watchAudit.summary.fullyAvoidedPeriods}/{watchAudit.summary.periods} 期全部未开</div>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-[10.5px] leading-relaxed text-amber-900">
+                    {watchAudit.note}。只要“至少开出一肖”的比例较高，就不能把观察组升级为绝杀。
+                  </div>
+
+                  <div className="rounded-xl border border-sky-200 bg-sky-50 p-3 text-[10.5px] leading-relaxed text-sky-900">
+                    数值分差仅在 {watchAudit.separationAudit.numericallyQualifiedPeriods}/{watchAudit.summary.periods} 期达标，
+                    历史验证门槛允许展示 {watchAudit.separationAudit.displayedPeriods} 期；
+                    因同类样本不足，其余 {watchAudit.separationAudit.suppressedPeriods} 期均隐藏具名候选。
+                  </div>
+
+                  <div className="max-h-72 overflow-auto rounded-xl border border-slate-200">
+                    <table className="w-full min-w-[560px] text-left text-[10.5px]">
+                      <thead className="sticky top-0 bg-slate-50 text-slate-500">
+                        <tr>
+                          <th className="p-2.5">期号</th>
+                          <th className="p-2.5">观察候选</th>
+                          <th className="p-2.5">其中实际开出</th>
+                          <th className="p-2.5">边界分差</th>
+                          <th className="p-2.5 text-right">结果</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {watchAudit.rows.slice().reverse().map(row => (
+                          <tr key={row.issue} className={row.anyOpened ? "bg-rose-50/40" : "bg-emerald-50/30"}>
+                            <td className="p-2.5 font-semibold text-slate-800">第 {row.issue} 期<span className="block text-[9px] font-normal text-slate-400">{row.date}</span></td>
+                            <td className="p-2.5 text-slate-700">{row.watchedZodiacs.map(z => `【${z}】`).join(" ")}</td>
+                            <td className="p-2.5 font-semibold text-rose-700">{row.openedZodiacs.length > 0 ? row.openedZodiacs.map(z => `【${z}】`).join(" ") : "无"}</td>
+                            <td className="p-2.5 text-slate-600">
+                              {row.watchSeparation ? `${row.watchSeparation.boundaryGap.toFixed(2)}分 · ${row.displayed ? "展示" : row.numericallySeparated ? "待验证" : "隐藏"}` : "-"}
+                            </td>
+                            <td className={`p-2.5 text-right font-bold ${row.anyOpened ? "text-rose-700" : "text-emerald-700"}`}>{row.anyOpened ? "有开出" : "全部避开"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
 
         {/* Number recommendations */}
@@ -921,7 +1188,7 @@ export const SmartPredictorSection: React.FC<SmartPredictorSectionProps> = ({
         )}
 
         {/* --- NEW: Tier 3 Kill/Exclusion Dedicated Radar Intercept Cockpit --- */}
-        {prediction.killInterceptHistory && (
+        {prediction.tierKill.length > 0 && prediction.killInterceptHistory && (
           <div id="kill_intercept_cockpit" className="border-t border-gray-100 pt-5 space-y-4">
             <div className="flex items-center justify-between flex-wrap gap-2">
               <div className="text-xs font-bold text-gray-800 uppercase tracking-wider flex items-center gap-1.5">

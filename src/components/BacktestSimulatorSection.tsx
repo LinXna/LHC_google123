@@ -1503,6 +1503,84 @@ export const BacktestSimulatorSection: React.FC<BacktestSimulatorSectionProps> =
                   </div>
                 </div>
 
+                {yearResult.summary.outOfSample && (() => {
+                  const audit = yearResult.summary.outOfSample;
+                  const enoughSamples = audit.periods >= 20;
+                  const passed = enoughSamples && audit.beatsRandomBaseline;
+                  const statusText = !enoughSamples
+                    ? "样本不足，暂不判定"
+                    : passed
+                      ? "已超过结构基线"
+                      : "未超过结构基线";
+
+                  return (
+                    <div className={`rounded-2xl border p-5 shadow-sm space-y-4 ${
+                      passed ? "bg-emerald-50/60 border-emerald-200" : "bg-amber-50/60 border-amber-200"
+                    }`}>
+                      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-sm font-bold text-gray-950 flex items-center gap-2">
+                            <Activity className={`w-4.5 h-4.5 ${passed ? "text-emerald-600" : "text-amber-600"}`} />
+                            样本外概率与随机基线审计
+                          </h4>
+                          <p className="mt-1 text-[11px] text-gray-600">
+                            仅使用每期开奖前可见的历史数据，检查概率质量、排序能力与校准偏差。
+                          </p>
+                        </div>
+                        <span className={`inline-flex items-center gap-1.5 self-start rounded-full border px-3 py-1 text-[11px] font-bold ${
+                          passed
+                            ? "bg-emerald-100 border-emerald-200 text-emerald-800"
+                            : "bg-amber-100 border-amber-200 text-amber-800"
+                        }`}>
+                          {passed ? <CheckCircle className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                          {statusText}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                        <div className="rounded-xl border border-white/80 bg-white/80 p-3">
+                          <span className="text-[10px] font-bold text-gray-500">Brier（越低越好）</span>
+                          <div className="mt-1 text-lg font-black font-mono text-gray-900">{audit.brierScore.toFixed(4)}</div>
+                          <p className={`text-[10px] font-medium ${audit.brierGain > 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                            基线 {audit.baselineBrierScore.toFixed(4)} · 改善 {audit.brierGain >= 0 ? "+" : ""}{audit.brierGain.toFixed(4)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-white/80 bg-white/80 p-3">
+                          <span className="text-[10px] font-bold text-gray-500">LogLoss（越低越好）</span>
+                          <div className="mt-1 text-lg font-black font-mono text-gray-900">{audit.logLoss.toFixed(4)}</div>
+                          <p className={`text-[10px] font-medium ${audit.logLossGain > 0 ? "text-emerald-700" : "text-rose-600"}`}>
+                            基线 {audit.baselineLogLoss.toFixed(4)} · 改善 {audit.logLossGain >= 0 ? "+" : ""}{audit.logLossGain.toFixed(4)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-white/80 bg-white/80 p-3">
+                          <span className="text-[10px] font-bold text-gray-500">Top3 精度 / 随机提升</span>
+                          <div className="mt-1 text-lg font-black font-mono text-gray-900">
+                            {(audit.topKPrecision * 100).toFixed(1)}%
+                          </div>
+                          <p className="text-[10px] font-medium text-indigo-700">随机基线的 {audit.precisionLiftVsRandom.toFixed(2)} 倍</p>
+                        </div>
+                        <div className="rounded-xl border border-white/80 bg-white/80 p-3">
+                          <span className="text-[10px] font-bold text-gray-500">Top3 至少命中 / 校准误差</span>
+                          <div className="mt-1 text-lg font-black font-mono text-gray-900">
+                            {(audit.topKHitAnyRate * 100).toFixed(1)}%
+                          </div>
+                          <p className="text-[10px] font-medium text-gray-600">
+                            95%区间 {(audit.topKHitAny95CI.lower * 100).toFixed(0)}–{(audit.topKHitAny95CI.upper * 100).toFixed(0)}% · ECE {audit.calibrationError.toFixed(4)}
+                          </p>
+                        </div>
+                      </div>
+
+                      <p className={`text-[11px] font-medium ${passed ? "text-emerald-800" : "text-amber-900"}`}>
+                        {!enoughSamples
+                          ? `当前仅 ${audit.periods} 期，至少需要 20 期才允许评价特征或解除绝杀保护。`
+                          : passed
+                            ? `当前 ${audit.periods} 期同时通过概率误差与排序提升检查，可继续扩大样本验证。`
+                            : `当前 ${audit.periods} 期没有同时超过结构基线，系统应保持低信号模式并禁止强绝杀。`}
+                      </p>
+                    </div>
+                  );
+                })()}
+
                 {/* 命中分布对比折线图 (Hit Distribution Line Chart) */}
                 <div className="bg-white border border-gray-200 rounded-2xl p-5 shadow-sm space-y-4">
                   <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 border-b border-gray-100 pb-3">

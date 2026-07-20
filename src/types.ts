@@ -3,6 +3,8 @@ export interface LotteryRecord {
   date: string;
   numbers: number[];
   archive_year?: number;
+  /** Sortable unique key across years, e.g. 2026076 for issue 76 of 2026. */
+  periodId?: number;
 }
 
 export interface HotColdZodiac {
@@ -158,7 +160,14 @@ export interface AnalyzerReport {
     count: number;
     support: number;
     confidence?: number;
-    rules?: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+    rules?: Array<{
+      lhs: string[];
+      rhs: string;
+      confidence: number;
+      lift?: number;
+      sampleCount?: number;
+      confidenceLowerBound?: number;
+    }>;
   }>;
 }
 
@@ -218,6 +227,21 @@ export interface PredictionResult {
   tierHot: string[];
   tierMid: string[];
   tierKill: string[];
+  tierWatch?: string[];
+  tierWatchCandidates?: string[];
+  watchSeparation?: {
+    boundaryGap: number;
+    standardizedBoundaryGap: number;
+    scoreStdDev: number;
+    watchSpread: number;
+    boundaryTied: boolean;
+    numericalSeparation: boolean;
+    historicalValidationPassed: boolean;
+    historicalValidationPeriods: number;
+    historicalQualifiedPeriods: number;
+    meaningfulSeparation: boolean;
+    reason: string;
+  };
   scores: Record<string, number>;
   premiumHotNums: number[];
   hotNums: number[];
@@ -235,6 +259,50 @@ export interface PredictionResult {
     q?: number;
     r?: number;
     rates: Record<string, number>;
+  };
+  modelValidation?: {
+    signalDetected: boolean;
+    probabilitySignalDetected?: boolean;
+    candidateProbabilityBlendWeight?: number;
+    candidateValidationBrier?: number;
+    candidateValidationLogLoss?: number;
+    probabilityBlendWeight: number;
+    validationBrier: number;
+    baselineBrier: number;
+    validationLogLoss?: number;
+    baselineLogLoss?: number;
+    probabilityGainThreshold?: number;
+    probabilityValidationConsistent?: boolean;
+    killValidationLeakRate?: number;
+    killValidationSafeRate?: number;
+    killValidationPassed?: boolean;
+    validationPeriods: number;
+    historyWindow?: number;
+    adaptiveHistoryEnabled?: boolean;
+    historyWindowStable?: boolean;
+    historyWindowReason?: string;
+    historyWindowAudits?: Array<{
+      window: number;
+      periods: number;
+      validationPeriods: number;
+      top3Precision: number;
+      randomPrecision: number;
+      precisionLift: number;
+      firstHalfLift: number;
+      secondHalfLift: number;
+      brierScore: number;
+      baselineBrier: number;
+      logLoss: number;
+      baselineLogLoss: number;
+    }>;
+    top3Reliable?: boolean;
+    killTierSuppressed: boolean;
+    watchTierOnly?: boolean;
+    watchCandidatesSuppressed?: boolean;
+    regime?: string;
+    regimeSimilarityConfidence?: number;
+    disabledFeatureGroups?: string[];
+    featuresUsed?: string[];
   };
   benchmark?: {
     testedCount: number;
@@ -285,6 +353,7 @@ export interface FeatureResult {
   value: number;
   zodiac: string;
   issue: number;
+  /** Cross-year unique period key. Falls back to issue for legacy data. */
+  periodId?: number;
   metadata?: any;
 }
-

@@ -3192,6 +3192,13 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
                               {rule.rhs}
                             </span>
                           </div>
+                          <div className="text-[9px] text-slate-500 font-mono flex gap-3">
+                            {rule.sampleCount !== undefined && <span>样本: {rule.sampleCount}</span>}
+                            {rule.lift !== undefined && <span>Lift: {rule.lift.toFixed(2)}</span>}
+                            {rule.confidenceLowerBound !== undefined && (
+                              <span>95%下界: {(rule.confidenceLowerBound * 100).toFixed(1)}%</span>
+                            )}
+                          </div>
                         </div>
                       ))}
                     {report.frequentPatterns.flatMap(p => p.rules || []).length === 0 && (
@@ -4176,4 +4183,3 @@ export const PatternFinderSection: React.FC<PatternFinderSectionProps> = ({
     </div>
   );
 };
-

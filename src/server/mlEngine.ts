@@ -2,6 +2,207 @@ import * as fs from "fs";
 import * as path from "path";
 import { FeatureResult, LotteryRecord, PredictionResult } from "../types.js";
 import { ZodiacPatternAnalyzer } from "./zodiacAnalyzer.js";
+import { getPeriodId } from "./periodKey.js";
+import { structuralZodiacProbabilities } from "./evaluation.js";
+import { classifyRegimeState, computeRegimeState } from "./regime.js";
+
+let mlRandomState = 0x6d2b79f5;
+
+/** Resettable PRNG makes identical data/config produce identical predictions. */
+export function setMLRandomSeed(seed: number): void {
+  mlRandomState = (seed >>> 0) || 0x6d2b79f5;
+}
+
+function mlRandom(): number {
+  mlRandomState += 0x6d2b79f5;
+  let t = mlRandomState;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+
+export type FeatureGroup = "state" | "calibration" | "bayes" | "f1" | "f2" | "f5" | "regime";
+
+export interface HistoryWindowAudit {
+  window: number;
+  periods: number;
+  validationPeriods: number;
+  top3Precision: number;
+  randomPrecision: number;
+  precisionLift: number;
+  firstHalfLift: number;
+  secondHalfLift: number;
+  brierScore: number;
+  baselineBrier: number;
+  logLoss: number;
+  baselineLogLoss: number;
+}
+
+export interface AdaptiveHistorySelection {
+  selectedWindow: number;
+  stable: boolean;
+  reason: string;
+  audits: HistoryWindowAudit[];
+}
+
+export function chooseAdaptiveHistoryWindow(
+  audits: HistoryWindowAudit[],
+  fallbackWindow = 75
+): AdaptiveHistorySelection {
+  const usable = audits.filter(audit =>
+    audit.validationPeriods >= 10
+    && audit.brierScore <= audit.baselineBrier + 0.0025
+    && audit.logLoss <= audit.baselineLogLoss + 0.005
+    && Math.min(audit.firstHalfLift, audit.secondHalfLift) >= 0.8
+  );
+  const fallback = audits.find(audit => audit.window === fallbackWindow) || audits[0];
+  if (!fallback || usable.length === 0) {
+    return {
+      selectedWindow: fallback?.window ?? fallbackWindow,
+      stable: false,
+      reason: "候选窗口缺少足够的过去验证样本，保持75期保守窗口",
+      audits
+    };
+  }
+
+  const score = (audit: HistoryWindowAudit): number =>
+    0.5 * audit.precisionLift
+    + 0.25 * audit.firstHalfLift
+    + 0.25 * audit.secondHalfLift
+    - Math.abs(audit.window - fallbackWindow) * 0.0005;
+  const ranked = [...usable].sort((a, b) => score(b) - score(a) || a.window - b.window);
+  const winner = ranked[0];
+  const fallbackUsable = usable.find(audit => audit.window === fallback.window);
+  const requiredLift = fallbackUsable ? fallbackUsable.precisionLift + 0.03 : 1;
+  const selected = winner.window === fallback.window || winner.precisionLift >= requiredLift
+    ? winner
+    : fallback;
+  const stable = selected.precisionLift >= 1.05
+    && selected.firstHalfLift >= 0.95
+    && selected.secondHalfLift >= 0.95;
+
+  return {
+    selectedWindow: selected.window,
+    stable,
+    reason: selected.window === fallback.window
+      ? "候选窗口未稳定超过75期基准，保持保守窗口"
+      : `仅用过去验证段选择${selected.window}期窗口`,
+    audits
+  };
+}
+
+const FEATURE_GROUP_TOKENS: Record<FeatureGroup, string[]> = {
+  state: ["omission", "density", "consecutive", "longterm_density"],
+  calibration: ["calibrated_rate"],
+  bayes: ["bayes_open_prob", "logistic_veto_prob"],
+  f1: ["zodiac_analyzer_score", "score_roll"],
+  f2: ["f2_combo_veto"],
+  f5: ["f5_recovery"],
+  regime: ["regime_"]
+};
+
+export function filterDisabledFeatureGroups(features: string[], disabledGroups: string[] = []): string[] {
+  const normalized = new Set(disabledGroups.filter(group => group in FEATURE_GROUP_TOKENS) as FeatureGroup[]);
+  if (normalized.size === 0) return [...features];
+  return features.filter(feature => {
+    for (const group of normalized) {
+      if (FEATURE_GROUP_TOKENS[group].some(token => feature.includes(token))) return false;
+    }
+    return true;
+  });
+}
+
+export interface WatchSeparationDiagnostics {
+  boundaryGap: number;
+  standardizedBoundaryGap: number;
+  scoreStdDev: number;
+  watchSpread: number;
+  boundaryTied: boolean;
+  numericalSeparation: boolean;
+  historicalValidationPassed: boolean;
+  historicalValidationPeriods: number;
+  historicalQualifiedPeriods: number;
+  meaningfulSeparation: boolean;
+  reason: string;
+}
+
+const MIN_WATCH_BOUNDARY_GAP_POINTS = 0.25;
+const MIN_WATCH_STANDARDIZED_GAP = 0.15;
+const MIN_WATCH_HISTORICAL_EXAMPLES = 20;
+// Strict 2026 rolling audit (issues 17-76, history 2023-2026): only one
+// period cleared the numerical gate, so there is not yet enough evidence.
+const WATCH_HISTORICAL_VALIDATION_PERIODS = 60;
+const WATCH_HISTORICAL_QUALIFIED_PERIODS = 1;
+
+/**
+ * Measures whether the 9/10 ranking boundary is real enough to name a bottom-three
+ * watch group. Values are expressed in percentage points for direct UI display.
+ */
+export function assessWatchSeparation(
+  sortedZodiacs: string[],
+  rankingProbabilities: Record<string, number>
+): WatchSeparationDiagnostics {
+  const scorePoints = sortedZodiacs.map(zodiac => (rankingProbabilities[zodiac] || 0) * 100);
+  const mean = scorePoints.length > 0
+    ? scorePoints.reduce((sum, score) => sum + score, 0) / scorePoints.length
+    : 0;
+  const variance = scorePoints.length > 0
+    ? scorePoints.reduce((sum, score) => sum + (score - mean) ** 2, 0) / scorePoints.length
+    : 0;
+  const scoreStdDev = Math.sqrt(variance);
+  const boundaryGap = Math.max(0, (scorePoints[8] || 0) - (scorePoints[9] || 0));
+  const watchSpread = Math.max(0, (scorePoints[9] || 0) - (scorePoints[11] || 0));
+  const standardizedBoundaryGap = scoreStdDev > 1e-9 ? boundaryGap / scoreStdDev : 0;
+  const boundaryTied = boundaryGap < 0.005;
+  const numericalSeparation = !boundaryTied
+    && boundaryGap >= MIN_WATCH_BOUNDARY_GAP_POINTS
+    && standardizedBoundaryGap >= MIN_WATCH_STANDARDIZED_GAP;
+  const historicalValidationPassed = WATCH_HISTORICAL_QUALIFIED_PERIODS >= MIN_WATCH_HISTORICAL_EXAMPLES;
+  const meaningfulSeparation = numericalSeparation && historicalValidationPassed;
+
+  let reason = "末位边界分差和历史验证均达到展示门槛";
+  if (boundaryTied) reason = "第9名与第10名在两位小数精度下并列";
+  else if (boundaryGap < MIN_WATCH_BOUNDARY_GAP_POINTS) reason = "末位边界绝对分差不足0.25分";
+  else if (standardizedBoundaryGap < MIN_WATCH_STANDARDIZED_GAP) reason = "末位边界分差相对整体波动过小";
+  else if (!historicalValidationPassed) {
+    reason = `数值分差达标，但历史同类样本仅${WATCH_HISTORICAL_QUALIFIED_PERIODS}期，未达到${MIN_WATCH_HISTORICAL_EXAMPLES}期验证门槛`;
+  }
+
+  return {
+    boundaryGap: Number(boundaryGap.toFixed(4)),
+    standardizedBoundaryGap: Number(standardizedBoundaryGap.toFixed(4)),
+    scoreStdDev: Number(scoreStdDev.toFixed(4)),
+    watchSpread: Number(watchSpread.toFixed(4)),
+    boundaryTied,
+    numericalSeparation,
+    historicalValidationPassed,
+    historicalValidationPeriods: WATCH_HISTORICAL_VALIDATION_PERIODS,
+    historicalQualifiedPeriods: WATCH_HISTORICAL_QUALIFIED_PERIODS,
+    meaningfulSeparation,
+    reason
+  };
+}
+
+export function buildDecisionTiers(
+  sortedZodiacs: string[],
+  signalDetected: boolean,
+  watchReliable = true
+): {
+  tierHot: string[];
+  tierMid: string[];
+  tierKill: string[];
+  tierWatch: string[];
+  tierWatchCandidates: string[];
+} {
+  const tierWatchCandidates = signalDetected ? [] : sortedZodiacs.slice(9, 12);
+  return {
+    tierHot: sortedZodiacs.slice(0, 3),
+    tierMid: sortedZodiacs.slice(3, 9),
+    tierKill: signalDetected ? sortedZodiacs.slice(9, 12) : [],
+    tierWatch: !signalDetected && watchReliable ? tierWatchCandidates : [],
+    tierWatchCandidates
+  };
+}
 
 // =========================================================================
 // 1. Data Structures and Core Interfaces
@@ -75,7 +276,7 @@ export class TSLogisticRegression {
   public fit(samples: MLSample[], features: string[]): void {
     // Initialize weights
     for (const f of features) {
-      this.weights[f] = 0.01 * (Math.random() - 0.5);
+      this.weights[f] = 0.01 * (mlRandom() - 0.5);
     }
     this.bias = 0.0;
 
@@ -191,7 +392,7 @@ export class TSDecisionTree {
 
     // Feature subset selection for tree node (random forest style)
     const m = Math.max(1, Math.floor(Math.sqrt(features.length)));
-    const subsetFeatures = [...features].sort(() => 0.5 - Math.random()).slice(0, m);
+    const subsetFeatures = [...features].sort(() => 0.5 - mlRandom()).slice(0, m);
 
     for (const f of subsetFeatures) {
       const vals = samples.map(s => s.features[f] || 0);
@@ -202,7 +403,7 @@ export class TSDecisionTree {
       if (this.randomSplit) {
         // ExtraTrees style: choose one random value between min and max
         if (uniqueVals.length > 1) {
-          const idx = Math.floor(Math.random() * (uniqueVals.length - 1));
+          const idx = Math.floor(mlRandom() * (uniqueVals.length - 1));
           candidates = [(uniqueVals[idx] + uniqueVals[idx + 1]) / 2];
         }
       } else {
@@ -285,7 +486,7 @@ export class TSRandomForest {
       // Bootstrap sampling (bagging)
       const bootstrap: MLSample[] = [];
       for (let j = 0; j < N; j++) {
-        bootstrap.push(samples[Math.floor(Math.random() * N)]);
+        bootstrap.push(samples[Math.floor(mlRandom() * N)]);
       }
       const tree = new TSDecisionTree(this.maxDepth, this.minSplit, false);
       tree.fit(bootstrap, features);
@@ -493,13 +694,15 @@ export class TSStackingClassifier {
 
 export class TSProbabilityCalibrator {
   /**
-   * Platt Scaling calibration parameters: p_cal = 1 / (1 + exp(A * p_raw + B))
+   * Platt scaling on the raw probability logit. Positive initialization keeps
+   * calibration monotonic and avoids accidentally reversing zodiac rankings.
    */
   public static plattScaling(probs: number[], labels: number[]): { A: number; B: number } {
-    let A = -2.0;
-    let B = 0.5;
-    const lr = 0.05;
-    const epochs = 100;
+    let A = 1.0;
+    let B = 0.0;
+    const lr = 0.03;
+    const epochs = 200;
+    const l2 = 0.01;
     const N = probs.length;
 
     if (N === 0) return { A, B };
@@ -508,18 +711,26 @@ export class TSProbabilityCalibrator {
       let gradA = 0;
       let gradB = 0;
       for (let i = 0; i < N; i++) {
-        const p = probs[i];
-        const z = A * p + B;
+        const p = Math.min(1 - 1e-6, Math.max(1e-6, probs[i]));
+        const x = Math.log(p / (1 - p));
+        const z = A * x + B;
         const cal = 1.0 / (1.0 + Math.exp(-z));
         const err = cal - labels[i];
 
-        gradA += err * p;
+        gradA += err * x;
         gradB += err;
       }
-      A -= lr * (gradA / N);
+      A -= lr * ((gradA / N) + l2 * (A - 1));
       B -= lr * (gradB / N);
+      A = Math.max(0.05, Math.min(5, A));
     }
     return { A, B };
+  }
+
+  public static calibratePlatt(probability: number, params: { A: number; B: number }): number {
+    const p = Math.min(1 - 1e-6, Math.max(1e-6, probability));
+    const logit = Math.log(p / (1 - p));
+    return 1 / (1 + Math.exp(-(params.A * logit + params.B)));
   }
 
   /**
@@ -793,7 +1004,7 @@ export class TSFeatureSelection {
       // Create shuffled samples
       const shuffledSamples = samples.map(s => ({ ...s, features: { ...s.features } }));
       const originalVals = samples.map(s => s.features[f] || 0);
-      const shuffledVals = [...originalVals].sort(() => 0.5 - Math.random());
+      const shuffledVals = [...originalVals].sort(() => 0.5 - mlRandom());
 
       for (let i = 0; i < shuffledSamples.length; i++) {
         shuffledSamples[i].features[f] = shuffledVals[i];
@@ -872,49 +1083,9 @@ export class TSFeatureSelection {
 
 export class TSRegimeDetector {
   public static detect(recentRecords: LotteryRecord[], zodiacOrder: string[], baseMap: Record<number, string>): string {
-    const M = recentRecords.length;
-    if (M < 5) return "Random";
-
-    // 1. Calculate Average Unique Zodiacs (Diversity)
-    let totalUnique = 0;
-    let consecutiveCount = 0;
-    
-    const recentZList: string[][] = [];
-    for (const rec of recentRecords) {
-      const zset = new Set(rec.numbers.map(n => baseMap[n] || "未知"));
-      recentZList.push(Array.from(zset));
-      totalUnique += zset.size;
-    }
-    const avgUnique = totalUnique / M;
-
-    // 2. Measure Consecutive Repeaters
-    for (let t = 1; t < M; t++) {
-      const prev = new Set(recentZList[t - 1]);
-      const curr = recentZList[t];
-      for (const z of curr) {
-        if (prev.has(z)) consecutiveCount++;
-      }
-    }
-    const repeatRate = consecutiveCount / M;
-
-    // 3. Regime Classification Rules
-    if (avgUnique < 4.2) {
-      return "Sparse"; // few zodiacs repeating heavily
-    }
-    if (repeatRate > 1.4) {
-      return "Burst"; // massive short-term repeat pattern
-    }
-    if (avgUnique > 5.5 && repeatRate < 0.5) {
-      return "Dense"; // even spread, very low repeat
-    }
-    if (avgUnique < 4.8 && repeatRate > 0.8) {
-      return "Hot"; // hot streaks are ruling the draws
-    }
-    if (avgUnique > 5.0 && repeatRate > 1.0) {
-      return "Cold"; // cold streaks are breaking out (unusual draws)
-    }
-
-    return "Random"; // default balanced state
+    if (recentRecords.length < 5) return "Random";
+    const matrix = recentRecords.map(record => record.numbers.map(number => baseMap[number] || "未知"));
+    return classifyRegimeState(computeRegimeState(matrix, matrix.length, 12));
   }
 }
 
@@ -1088,8 +1259,90 @@ export class TSModelVersionControl {
 // 9. Machine Learning Prediction Model (V3 Ultimate Orchestrator)
 // =========================================================================
 
+function auditHistoryWindowCandidates(
+  samples: MLSample[],
+  features: string[],
+  candidates: number[],
+  structuralProbabilities: Record<string, number>
+): HistoryWindowAudit[] {
+  const allIssues = Array.from(new Set(samples.map(sample => sample.period))).sort((a, b) => a - b);
+  const audits: HistoryWindowAudit[] = [];
+  const clamp = (value: number): number => Math.min(1 - 1e-9, Math.max(1e-9, value));
+
+  for (const window of candidates) {
+    const windowIssues = allIssues.slice(-window);
+    if (windowIssues.length < Math.min(window, 45)) continue;
+    const validationCount = Math.max(10, Math.min(15, Math.floor(windowIssues.length * 0.2)));
+    const split = windowIssues.length - validationCount;
+    const fitIssueSet = new Set(windowIssues.slice(0, split));
+    const validationIssues = windowIssues.slice(split);
+    const validationIssueSet = new Set(validationIssues);
+    const fitSamples = samples.filter(sample => fitIssueSet.has(sample.period));
+    const validationSamples = samples.filter(sample => validationIssueSet.has(sample.period));
+    if (fitSamples.length === 0 || validationSamples.length === 0) continue;
+
+    const model = new TSGradientBoosting(5, 3, 0.1);
+    model.fit(fitSamples, features);
+    const predictions = validationSamples.map(sample => ({
+      sample,
+      probability: clamp(model.predictProb(sample))
+    }));
+
+    let brierScore = 0;
+    let baselineBrier = 0;
+    let logLoss = 0;
+    let baselineLogLoss = 0;
+    for (const row of predictions) {
+      const baseline = clamp(structuralProbabilities[row.sample.zodiac] ?? 0.5);
+      const label = row.sample.label;
+      brierScore += (row.probability - label) ** 2;
+      baselineBrier += (baseline - label) ** 2;
+      logLoss += -(label * Math.log(row.probability) + (1 - label) * Math.log(1 - row.probability));
+      baselineLogLoss += -(label * Math.log(baseline) + (1 - label) * Math.log(1 - baseline));
+    }
+    const sampleCount = Math.max(1, predictions.length);
+
+    const rankMetrics = (periods: number[]): { precision: number; random: number; lift: number } => {
+      if (periods.length === 0) return { precision: 0, random: 0, lift: 0 };
+      let precisionTotal = 0;
+      let randomTotal = 0;
+      for (const period of periods) {
+        const periodRows = predictions.filter(row => row.sample.period === period);
+        const top3 = [...periodRows].sort((a, b) => b.probability - a.probability).slice(0, 3);
+        precisionTotal += top3.reduce((sum, row) => sum + row.sample.label, 0) / Math.max(1, top3.length);
+        randomTotal += periodRows.reduce((sum, row) => sum + row.sample.label, 0) / Math.max(1, periodRows.length);
+      }
+      const precision = precisionTotal / periods.length;
+      const random = randomTotal / periods.length;
+      return { precision, random, lift: random > 0 ? precision / random : 0 };
+    };
+
+    const overall = rankMetrics(validationIssues);
+    const half = Math.ceil(validationIssues.length / 2);
+    const firstHalf = rankMetrics(validationIssues.slice(0, half));
+    const secondHalf = rankMetrics(validationIssues.slice(half));
+    audits.push({
+      window,
+      periods: windowIssues.length,
+      validationPeriods: validationIssues.length,
+      top3Precision: overall.precision,
+      randomPrecision: overall.random,
+      precisionLift: overall.lift,
+      firstHalfLift: firstHalf.lift,
+      secondHalfLift: secondHalf.lift,
+      brierScore: brierScore / sampleCount,
+      baselineBrier: baselineBrier / sampleCount,
+      logLoss: logLoss / sampleCount,
+      baselineLogLoss: baselineLogLoss / sampleCount
+    });
+  }
+  return audits;
+}
+
 export class MachineLearningPredictionModel {
   public static ACTIVE_VERSION = "v3_ultimate_ensemble_1.0";
+  /** 2026 issues 17-76: 75 periods beat 90 periods in 2/3 windows and cut runtime. */
+  public static DEFAULT_HISTORY_WINDOW = 75;
 
   public predict(
     repository: any,
@@ -1098,6 +1351,7 @@ export class MachineLearningPredictionModel {
     customWeights?: any,
     passedRecords?: LotteryRecord[]
   ): PredictionResult {
+    setMLRandomSeed((customWeights?.randomSeed ?? 20260720) ^ currentIssue);
     const rawRecords = passedRecords || (baseAnalyzer.loadJsonData(null) as LotteryRecord[]);
     const records = baseAnalyzer.resampleIfEnabled ? baseAnalyzer.resampleIfEnabled(rawRecords) : rawRecords;
     
@@ -1125,10 +1379,11 @@ export class MachineLearningPredictionModel {
     const inferenceSamples = expandedSamples.filter(s => s.period === currentIssue);
 
     const isBenchmarkMode = customWeights?.isBenchmark === true || customWeights?.isBacktest === true;
+    const shouldPersistArtifacts = customWeights?.persistArtifacts === true && !isBenchmarkMode;
 
-    // Apply strict sample size limits to boost execution speed while maintaining statistical quality
+    // Cap the candidate pool before past-only feature/window selection.
     const trainIssues = Array.from(new Set(trainingSamples.map(s => s.period))).sort((a, b) => a - b);
-    const maxPeriods = isBenchmarkMode ? 50 : 300;
+    const maxPeriods = Math.max(90, Math.min(180, Number(customWeights?.historyWindow) || 90));
     if (trainIssues.length > maxPeriods) {
       const thresholdPeriod = trainIssues[trainIssues.length - maxPeriods];
       trainingSamples = trainingSamples.filter(s => s.period >= thresholdPeriod);
@@ -1154,11 +1409,54 @@ export class MachineLearningPredictionModel {
     }
 
     // 4. Feature Selection (L1 Lasso selection)
-    const activeFeatures = TSFeatureSelection.selectL1Features(trainingSamples, expandedFeatures, 1e-4);
+    const disabledFeatureGroups = Array.isArray(customWeights?.disabledFeatureGroups)
+      ? customWeights.disabledFeatureGroups.map(String)
+      : [];
+    const ablatedFeatures = filterDisabledFeatureGroups(expandedFeatures, disabledFeatureGroups);
+    if (ablatedFeatures.length === 0) {
+      throw new Error("特征消融配置移除了全部可用特征");
+    }
+    const preSelectionIssues = Array.from(new Set(trainingSamples.map(sample => sample.period))).sort((a, b) => a - b);
+    const featureSelectionEnd = Math.max(1, Math.floor(preSelectionIssues.length * 0.7));
+    const featureSelectionIssueSet = new Set(preSelectionIssues.slice(0, featureSelectionEnd));
+    const featureSelectionSamples = trainingSamples.filter(sample => featureSelectionIssueSet.has(sample.period));
+    const activeFeatures = TSFeatureSelection.selectL1Features(featureSelectionSamples, ablatedFeatures, 1e-4);
+
+    // Select the memory length using labels that all precede the target period.
+    // An explicit historyWindow disables auto-selection for reproducible audits.
+    const structuralProbabilities = structuralZodiacProbabilities(numToZodiac, zodiacOrder);
+    const adaptiveHistoryEnabled = customWeights?.adaptiveHistoryWindow !== false
+      && customWeights?.historyWindow === undefined;
+    const windowCandidates = adaptiveHistoryEnabled
+      ? [60, 75, 90]
+      : [Math.max(30, Math.min(180, Number(customWeights?.historyWindow) || MachineLearningPredictionModel.DEFAULT_HISTORY_WINDOW))];
+    const historyAudits = auditHistoryWindowCandidates(
+      trainingSamples,
+      activeFeatures,
+      windowCandidates,
+      structuralProbabilities
+    );
+    const historySelection = adaptiveHistoryEnabled
+      ? chooseAdaptiveHistoryWindow(historyAudits, MachineLearningPredictionModel.DEFAULT_HISTORY_WINDOW)
+      : {
+          selectedWindow: windowCandidates[0],
+          stable: false,
+          reason: "使用显式固定历史窗口",
+          audits: historyAudits
+        };
+    const selectedIssues = Array.from(new Set(trainingSamples.map(sample => sample.period)))
+      .sort((a, b) => a - b)
+      .slice(-historySelection.selectedWindow);
+    const selectedIssueSet = new Set(selectedIssues);
+    trainingSamples = trainingSamples.filter(sample => selectedIssueSet.has(sample.period));
 
     // 5. Regime Detection
     const recentRecords = records.slice(Math.max(0, records.length - 15));
     const regime = TSRegimeDetector.detect(recentRecords, zodiacOrder, numToZodiac);
+    const regimeMetadata = typeof repository.getFeatureMetadata === "function"
+      ? repository.getFeatureMetadata(currentIssue, zodiacOrder[0], "regime_similarity_open_rate")
+      : undefined;
+    const regimeSimilarityConfidence = Number(regimeMetadata?.confidence) || 0;
 
     // 6. Drift Detection (PSI)
     const driftReport = isBenchmarkMode
@@ -1220,38 +1518,213 @@ export class MachineLearningPredictionModel {
       }
     }
 
-    // 8. Train the final Stacking Classifier on 100% of labeled training data
+    // 8. Fit calibration on a chronological holdout. Never calibrate with the
+    // same in-sample probabilities used to fit the classifier.
+    let calibrationFitProbs: number[] = [];
+    let calibrationFitLabels: number[] = [];
+    let signalValidationProbs: number[] = [];
+    let signalValidationSamples: MLSample[] = [];
+    if (issues.length >= 20) {
+      // Reserve at least 10 periods for calibrator fitting and 10 untouched
+      // periods for the probability signal gate, including a 60-period window.
+      const calibrationIssueCount = Math.max(20, Math.floor(issues.length * 0.3));
+      const calibrationStart = issues.length - calibrationIssueCount;
+      const calibrationTrainIssues = new Set(issues.slice(0, calibrationStart));
+      const calibrationValidationIssues = new Set(issues.slice(calibrationStart));
+      const calibrationTrain = trainingSamples.filter(s => calibrationTrainIssues.has(s.period));
+      const heldOutSamples = trainingSamples.filter(s => calibrationValidationIssues.has(s.period));
+
+      if (calibrationTrain.length > 0 && heldOutSamples.length > 0) {
+        const calibrationStacker = new TSStackingClassifier();
+        calibrationStacker.baseModels.gbdt = new TSGradientBoosting(isBenchmarkMode ? 3 : 10, bestDepth, bestLr);
+        calibrationStacker.fit(calibrationTrain, activeFeatures, isBenchmarkMode);
+        const heldOutRawProbs = heldOutSamples.map(s => calibrationStacker.predictProb(s, activeFeatures));
+        const heldOutPeriods = Array.from(new Set(heldOutSamples.map(s => s.period))).sort((a, b) => a - b);
+        const gateStart = Math.ceil(heldOutPeriods.length / 2);
+        const calibrationFitPeriods = new Set(heldOutPeriods.slice(0, gateStart));
+        const signalValidationPeriods = new Set(heldOutPeriods.slice(gateStart));
+
+        heldOutSamples.forEach((sample, index) => {
+          if (calibrationFitPeriods.has(sample.period)) {
+            calibrationFitProbs.push(heldOutRawProbs[index]);
+            calibrationFitLabels.push(sample.label);
+          } else if (signalValidationPeriods.has(sample.period)) {
+            signalValidationSamples.push(sample);
+            signalValidationProbs.push(heldOutRawProbs[index]);
+          }
+        });
+      }
+    }
+
+    // 9. Train the final Stacking Classifier on 100% of labeled training data.
     const stacker = new TSStackingClassifier();
     // Adjust base models according to best swept hyperparameters
     const gbdtTrees = isBenchmarkMode ? 3 : 10;
     stacker.baseModels.gbdt = new TSGradientBoosting(gbdtTrees, bestDepth, bestLr);
     stacker.fit(trainingSamples, activeFeatures, isBenchmarkMode);
 
-    // 9. Probability Calibration (Isotonic Regression + Platt Scaling)
-    const rawTrainProbs = trainingSamples.map(s => stacker.predictProb(s, activeFeatures));
-    const trainLabels = trainingSamples.map(s => s.label);
+    // 10. Probability Calibration (Isotonic Regression + Platt Scaling)
+    const hasOutOfSampleCalibration = calibrationFitProbs.length > 0;
+    const plattParams = hasOutOfSampleCalibration
+      ? TSProbabilityCalibrator.plattScaling(calibrationFitProbs, calibrationFitLabels)
+      : { A: 1, B: 0 };
+    const isotonicPools = hasOutOfSampleCalibration
+      ? TSProbabilityCalibrator.isotonicRegression(calibrationFitProbs, calibrationFitLabels)
+      : [];
 
-    const plattParams = TSProbabilityCalibrator.plattScaling(rawTrainProbs, trainLabels);
-    const isotonicPools = TSProbabilityCalibrator.isotonicRegression(rawTrainProbs, trainLabels);
+    const calibrateProbability = (rawProbability: number): number => {
+      if (!hasOutOfSampleCalibration) return rawProbability;
+      const calibratedPlatt = TSProbabilityCalibrator.calibratePlatt(rawProbability, plattParams);
+      const calibratedIsotonic = TSProbabilityCalibrator.calibrateIsotonic(rawProbability, isotonicPools);
+      return 0.5 * calibratedPlatt + 0.5 * calibratedIsotonic;
+    };
+
+    // Validation-selected shrinkage prevents an overconfident model from being
+    // worse than the known random-draw structure. A meaningful improvement is
+    // required before model probabilities receive weight.
+    let probabilityBlendWeight = 0;
+    let validationBrier = Number.POSITIVE_INFINITY;
+    let baselineValidationBrier = Number.POSITIVE_INFINITY;
+    let validationLogLoss = Number.POSITIVE_INFINITY;
+    let baselineValidationLogLoss = Number.POSITIVE_INFINITY;
+    let probabilityGainThreshold = 0;
+    let probabilityValidationConsistent = false;
+    let killValidationLeakRate = 1;
+    let killValidationSafeRate = 0;
+    let killValidationPassed = false;
+    const signalValidationPeriodCount = new Set(signalValidationSamples.map(sample => sample.period)).size;
+    if (hasOutOfSampleCalibration && signalValidationPeriodCount >= 10) {
+      const calibratedValidation = signalValidationProbs.map(calibrateProbability);
+      baselineValidationBrier = signalValidationSamples.reduce((sum, sample) => {
+        const baseline = structuralProbabilities[sample.zodiac] ?? 0.5;
+        return sum + (baseline - sample.label) ** 2;
+      }, 0) / Math.max(1, signalValidationSamples.length);
+      baselineValidationLogLoss = signalValidationSamples.reduce((sum, sample) => {
+        const baseline = Math.min(1 - 1e-9, Math.max(1e-9, structuralProbabilities[sample.zodiac] ?? 0.5));
+        return sum - (sample.label * Math.log(baseline) + (1 - sample.label) * Math.log(1 - baseline));
+      }, 0) / Math.max(1, signalValidationSamples.length);
+
+      validationBrier = baselineValidationBrier;
+      validationLogLoss = baselineValidationLogLoss;
+      for (const weight of [0.05, 0.1, 0.15, 0.25, 0.4]) {
+        const candidateBrier = signalValidationSamples.reduce((sum, sample, index) => {
+          const baseline = structuralProbabilities[sample.zodiac] ?? 0.5;
+          const modelProbability = calibratedValidation[index] ?? baseline;
+          const blended = weight * modelProbability + (1 - weight) * baseline;
+          return sum + (blended - sample.label) ** 2;
+        }, 0) / Math.max(1, signalValidationSamples.length);
+        const candidateLogLoss = signalValidationSamples.reduce((sum, sample, index) => {
+          const baseline = structuralProbabilities[sample.zodiac] ?? 0.5;
+          const modelProbability = calibratedValidation[index] ?? baseline;
+          const blended = Math.min(1 - 1e-9, Math.max(1e-9, weight * modelProbability + (1 - weight) * baseline));
+          return sum - (sample.label * Math.log(blended) + (1 - sample.label) * Math.log(1 - blended));
+        }, 0) / Math.max(1, signalValidationSamples.length);
+        if (candidateBrier < validationBrier && candidateLogLoss < baselineValidationLogLoss) {
+          validationBrier = candidateBrier;
+          validationLogLoss = candidateLogLoss;
+          probabilityBlendWeight = weight;
+        }
+      }
+
+      const periodGains = Array.from(new Set(signalValidationSamples.map(sample => sample.period))).map(period => {
+        const indices = signalValidationSamples
+          .map((sample, index) => ({ sample, index }))
+          .filter(row => row.sample.period === period);
+        return indices.reduce((sum, row) => {
+          const baseline = structuralProbabilities[row.sample.zodiac] ?? 0.5;
+          const modelProbability = calibratedValidation[row.index] ?? baseline;
+          const blended = probabilityBlendWeight * modelProbability + (1 - probabilityBlendWeight) * baseline;
+          return sum + (baseline - row.sample.label) ** 2 - (blended - row.sample.label) ** 2;
+        }, 0) / Math.max(1, indices.length);
+      });
+      const meanGain = periodGains.reduce((sum, gain) => sum + gain, 0) / Math.max(1, periodGains.length);
+      const gainVariance = periodGains.reduce((sum, gain) => sum + (gain - meanGain) ** 2, 0)
+        / Math.max(1, periodGains.length - 1);
+      const gainStandardError = Math.sqrt(gainVariance / Math.max(1, periodGains.length));
+      probabilityGainThreshold = Math.max(0.001, 1.28 * gainStandardError);
+      const midpoint = Math.ceil(periodGains.length / 2);
+      const averageGain = (values: number[]): number =>
+        values.reduce((sum, gain) => sum + gain, 0) / Math.max(1, values.length);
+      const firstHalfBrierGain = averageGain(periodGains.slice(0, midpoint));
+      const secondHalfBrierGain = averageGain(periodGains.slice(midpoint));
+
+      const periodLogLossGains = Array.from(new Set(signalValidationSamples.map(sample => sample.period))).map(period => {
+        const indices = signalValidationSamples
+          .map((sample, index) => ({ sample, index }))
+          .filter(row => row.sample.period === period);
+        return indices.reduce((sum, row) => {
+          const baseline = Math.min(1 - 1e-9, Math.max(1e-9, structuralProbabilities[row.sample.zodiac] ?? 0.5));
+          const modelProbability = calibratedValidation[row.index] ?? baseline;
+          const blended = Math.min(1 - 1e-9, Math.max(1e-9, probabilityBlendWeight * modelProbability + (1 - probabilityBlendWeight) * baseline));
+          const baselineLoss = -(row.sample.label * Math.log(baseline) + (1 - row.sample.label) * Math.log(1 - baseline));
+          const blendedLoss = -(row.sample.label * Math.log(blended) + (1 - row.sample.label) * Math.log(1 - blended));
+          return sum + baselineLoss - blendedLoss;
+        }, 0) / Math.max(1, indices.length);
+      });
+      const firstHalfLogLossGain = averageGain(periodLogLossGains.slice(0, midpoint));
+      const secondHalfLogLossGain = averageGain(periodLogLossGains.slice(midpoint));
+      probabilityValidationConsistent = firstHalfBrierGain > 0
+        && secondHalfBrierGain > 0
+        && firstHalfLogLossGain > 0
+        && secondHalfLogLossGain > 0;
+      if (
+        probabilityBlendWeight === 0
+        || baselineValidationBrier - validationBrier < probabilityGainThreshold
+        || baselineValidationLogLoss - validationLogLoss <= 0
+        || !probabilityValidationConsistent
+      ) {
+        probabilityBlendWeight = 0;
+        validationBrier = baselineValidationBrier;
+        validationLogLoss = baselineValidationLogLoss;
+      }
+
+      if (probabilityBlendWeight > 0) {
+        const validationPeriods = Array.from(new Set(signalValidationSamples.map(sample => sample.period)));
+        let killCandidates = 0;
+        let killLeaks = 0;
+        let safePeriods = 0;
+        for (const period of validationPeriods) {
+          const periodRows = signalValidationSamples
+            .map((sample, index) => ({ sample, probability: calibratedValidation[index] }))
+            .filter(row => row.sample.period === period)
+            .sort((a, b) => a.probability - b.probability)
+            .slice(0, 3);
+          const leaks = periodRows.reduce((sum, row) => sum + row.sample.label, 0);
+          killCandidates += periodRows.length;
+          killLeaks += leaks;
+          if (leaks === 0) safePeriods++;
+        }
+        killValidationLeakRate = killCandidates > 0 ? killLeaks / killCandidates : 1;
+        killValidationSafeRate = validationPeriods.length > 0 ? safePeriods / validationPeriods.length : 0;
+        killValidationPassed = killValidationLeakRate <= 0.25 && killValidationSafeRate >= 0.5;
+      }
+    }
+    const probabilitySignalDetected = probabilityBlendWeight > 0;
+    const signalDetected = probabilitySignalDetected && killValidationPassed && historySelection.stable;
+    const candidateProbabilityBlendWeight = probabilityBlendWeight;
+    const candidateValidationBrier = validationBrier;
+    const candidateValidationLogLoss = validationLogLoss;
+    // Candidate probability gains remain diagnostic-only until the independent
+    // kill-safety and window-stability gates also pass.
+    probabilityBlendWeight = signalDetected ? candidateProbabilityBlendWeight : 0;
+    if (!signalDetected) {
+      validationBrier = baselineValidationBrier;
+      validationLogLoss = baselineValidationLogLoss;
+    }
 
     // 10. Run Inference and Calibration for the 12 Zodiacs in the Target Period
     const predictions: Record<string, number> = {};
+    const rankingProbabilities: Record<string, number> = {};
     const rawScores: Record<string, number> = {};
 
     for (const s of targetSamples) {
       const rawProb = stacker.predictProb(s, activeFeatures);
       rawScores[s.zodiac] = rawProb;
 
-      // Apply Platt Scaling Calibration
-      const zPlatt = plattParams.A * rawProb + plattParams.B;
-      const calibratedPlatt = 1.0 / (1.0 + Math.exp(-zPlatt));
-
-      // Apply Isotonic Calibration
-      const calibratedIsotonic = TSProbabilityCalibrator.calibrateIsotonic(rawProb, isotonicPools);
-
-      // Ensemble calibration (50/50 blending of Platt & Isotonic)
-      const finalCalibratedProb = 0.5 * calibratedPlatt + 0.5 * calibratedIsotonic;
-      predictions[s.zodiac] = finalCalibratedProb;
+      const calibratedProbability = calibrateProbability(rawProb);
+      rankingProbabilities[s.zodiac] = calibratedProbability;
+      const baseline = structuralProbabilities[s.zodiac] ?? 0.5;
+      predictions[s.zodiac] = probabilityBlendWeight * calibratedProbability + (1 - probabilityBlendWeight) * baseline;
     }
 
     // 11. Feature Importance (Permutation Importance on Stacker)
@@ -1283,11 +1756,14 @@ export class MachineLearningPredictionModel {
     }
 
     // 13. Map probabilities to output tiers (tierHot, tierMid, tierKill)
-    const sortedZodiacs = [...zodiacOrder].sort((a, b) => (predictions[b] || 0) - (predictions[a] || 0));
+    const sortedZodiacs = [...zodiacOrder].sort((a, b) => (rankingProbabilities[b] || 0) - (rankingProbabilities[a] || 0));
     
-    const tierHot = sortedZodiacs.slice(0, 3);
-    const tierMid = sortedZodiacs.slice(3, 8);
-    const tierKill = sortedZodiacs.slice(8, 12); // lowest 4 are vetoes (kills)
+    const watchSeparation = assessWatchSeparation(sortedZodiacs, rankingProbabilities);
+    const { tierHot, tierMid, tierKill, tierWatch, tierWatchCandidates } = buildDecisionTiers(
+      sortedZodiacs,
+      signalDetected,
+      watchSeparation.meaningfulSeparation
+    );
 
     // Build prediction output conforming perfectly to types
     const predictedCount = recentRecords.length > 0 
@@ -1296,7 +1772,7 @@ export class MachineLearningPredictionModel {
 
     const scores: Record<string, number> = {};
     for (const z of zodiacOrder) {
-      scores[z] = Math.round((predictions[z] || 0) * 100);
+      scores[z] = Number(((rankingProbabilities[z] || 0) * 100).toFixed(2));
     }
 
     // Map recommended zodiacs to actual numbers
@@ -1332,8 +1808,14 @@ export class MachineLearningPredictionModel {
     const currentRecord = records[records.length - 1];
     const difficultyScore = regime === "Sparse" || regime === "Burst" ? 85 : regime === "Dense" ? 45 : 65;
 
-    const conclusion = `【V3 数据驱动智能推演】当前市场检测为 ${regime} 模式。Ensemble Stacking 引擎共融合 4 种底层架构。在最近 15 期中，主攻生肖特征共振概率处于完美置信空间。`;
-    const actionAdvice = `建议重点关注主攻组合：${tierHot.join("、")}，坚决清除死穴绝杀：${tierKill.join("、")}。`;
+    const conclusion = signalDetected
+      ? `【V3 数据驱动智能推演】当前市场检测为 ${regime} 模式。模型在时间留出验证集上优于结构基线，概率融合权重为 ${(probabilityBlendWeight * 100).toFixed(0)}%。`
+      : `【低信号保护】当前模型未在时间留出验证集上显著优于开奖结构基线。本期仅保留Top-3研究排序，不输出强绝杀结论。`;
+    const actionAdvice = signalDetected
+      ? `建议关注主攻组合：${tierHot.join("、")}；低分观察组：${tierKill.join("、")}。`
+      : tierWatch.length > 0
+        ? `主攻排序仅供观察：${tierHot.join("、")}。末位观察组：${tierWatch.join("、")}，仅表示模型相对低分，不可作为绝杀或排除依据。`
+        : `主攻排序仅供观察：${tierHot.join("、")}。末位边界分差不足，本期不生成具名低分观察组，更不可作为绝杀或排除依据。`;
 
     // 14. Save Run as Experiment & Save Model Metadata
     const expId = `exp_${Date.now()}`;
@@ -1345,7 +1827,7 @@ export class MachineLearningPredictionModel {
       featuresUsed: activeFeatures,
       modelVersion: MachineLearningPredictionModel.ACTIVE_VERSION
     };
-    TSExperimentManager.saveExperiment(exp);
+    if (shouldPersistArtifacts) TSExperimentManager.saveExperiment(exp);
 
     const modelMeta: ModelMetadata = {
       version: MachineLearningPredictionModel.ACTIVE_VERSION,
@@ -1353,7 +1835,7 @@ export class MachineLearningPredictionModel {
       featureList: activeFeatures,
       weights: stacker.metaModel.weights
     };
-    TSModelVersionControl.saveModel(MachineLearningPredictionModel.ACTIVE_VERSION, modelMeta);
+    if (shouldPersistArtifacts) TSModelVersionControl.saveModel(MachineLearningPredictionModel.ACTIVE_VERSION, modelMeta);
 
     // Compile prediction response
     const result: PredictionResult = {
@@ -1367,6 +1849,9 @@ export class MachineLearningPredictionModel {
       tierHot,
       tierMid,
       tierKill,
+      tierWatch,
+      tierWatchCandidates,
+      watchSeparation,
       scores,
       premiumHotNums,
       hotNums: uniqueHotNums,
@@ -1378,14 +1863,47 @@ export class MachineLearningPredictionModel {
       evalReasons: [
         `【ML 决策仓】系统已摒弃所有人工固定权重，由 Machine Learning 自动学习权重。`,
         `【特征共振】已对 30+ 扩展特征（交互特征、多阶特征及滑动时间窗口）进行全面学习。`,
-        `【置信度校验】已通过 Walk-Forward 前向验证与 Platt 概率校准，可信度评分为 85.6%。`,
+        `【置信度校验】已通过 Walk-Forward 前向验证；概率校准使用${hasOutOfSampleCalibration ? "时间后段留出样本" : "原始概率（样本不足，未强制校准）"}。`,
+        `【动态记忆】${historySelection.reason}；当前有效窗口 ${historySelection.selectedWindow} 期。`,
+        `【基线收缩】模型概率权重 ${(probabilityBlendWeight * 100).toFixed(0)}%；${signalDetected ? "验证集达到最小增益门槛" : "未达到增益门槛，已关闭强绝杀"}。`,
         `【主动模式】系统检测当前大盘运行在【${regime}】模式。`,
         `【无损对冲】特征漂移 PSI 监控中，漂移特征数量：${driftReport.items.filter(item => item.status === "Significant Drift").length} 个。`
       ],
       calibration: {
-        method: "Platt+Isotonic",
+        method: "Platt+Isotonic+StructuralShrinkage",
         windowSize: 15,
         rates: predictions
+      },
+      modelValidation: {
+        signalDetected,
+        probabilitySignalDetected,
+        candidateProbabilityBlendWeight,
+        candidateValidationBrier: Number.isFinite(candidateValidationBrier) ? candidateValidationBrier : 0,
+        candidateValidationLogLoss: Number.isFinite(candidateValidationLogLoss) ? candidateValidationLogLoss : 0,
+        probabilityBlendWeight,
+        validationBrier: Number.isFinite(validationBrier) ? validationBrier : 0,
+        baselineBrier: Number.isFinite(baselineValidationBrier) ? baselineValidationBrier : 0,
+        validationLogLoss: Number.isFinite(validationLogLoss) ? validationLogLoss : 0,
+        baselineLogLoss: Number.isFinite(baselineValidationLogLoss) ? baselineValidationLogLoss : 0,
+        probabilityGainThreshold,
+        probabilityValidationConsistent,
+        killValidationLeakRate,
+        killValidationSafeRate,
+        killValidationPassed,
+        validationPeriods: signalValidationPeriodCount,
+        historyWindow: historySelection.selectedWindow,
+        adaptiveHistoryEnabled,
+        historyWindowStable: historySelection.stable,
+        historyWindowReason: historySelection.reason,
+        historyWindowAudits: historySelection.audits,
+        top3Reliable: historySelection.stable,
+        killTierSuppressed: !signalDetected,
+        watchTierOnly: !signalDetected,
+        watchCandidatesSuppressed: !signalDetected && !watchSeparation.meaningfulSeparation,
+        regime,
+        regimeSimilarityConfidence,
+        disabledFeatureGroups,
+        featuresUsed: activeFeatures
       },
       logisticRegression: {
         learnedWeights: stacker.metaModel.weights,
@@ -1410,22 +1928,28 @@ export class MachineLearningPredictionModel {
     // Group features by issue first
     const featuresByIssue = new Map<number, FeatureResult[]>();
     for (const f of allFeatures) {
-      if (!featuresByIssue.has(f.issue)) {
-        featuresByIssue.set(f.issue, []);
+      const periodId = f.periodId ?? f.issue;
+      if (!featuresByIssue.has(periodId)) {
+        featuresByIssue.set(periodId, []);
       }
-      featuresByIssue.get(f.issue)!.push(f);
+      featuresByIssue.get(periodId)!.push(f);
     }
 
     const sortedIssues = Array.from(featuresByIssue.keys()).sort((a, b) => a - b);
     
     const recordByIssue = new Map<number, LotteryRecord>();
-    for (const r of records) recordByIssue.set(r.issue, r);
+    const recordIndexByIssue = new Map<number, number>();
+    records.forEach((r, idx) => {
+      const periodId = getPeriodId(r);
+      recordByIssue.set(periodId, r);
+      recordIndexByIssue.set(periodId, idx);
+    });
 
     for (const issue of sortedIssues) {
       const rec = recordByIssue.get(issue);
       if (!rec) continue;
 
-      const currentIdx = records.findIndex(r => r.issue === issue);
+      const currentIdx = recordIndexByIssue.get(issue) ?? -1;
       if (currentIdx === -1 || currentIdx === records.length - 1) continue;
       
       const nextRec = records[currentIdx + 1];
@@ -1468,4 +1992,3 @@ export class MachineLearningPredictionModel {
     return samples;
   }
 }
-

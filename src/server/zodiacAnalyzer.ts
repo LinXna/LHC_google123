@@ -22,6 +22,7 @@ import {
   ZodiacMultiplicityRule
 } from "../types.js";
 import { FeatureRepository, FeatureCollector, FeatureDatasetBuilder, FeatureAudit, PredictionSnapshot, PredictionPipeline } from "./features.js";
+import { getPeriodId } from "./periodKey.js";
 
 
 export class ZodiacPatternAnalyzer {
@@ -57,13 +58,14 @@ export class ZodiacPatternAnalyzer {
     if (records.length === 0) return [];
     
     // Find the latest archive_year to measure freshness difference
-    let latestYear = 2026;
+    let latestYear = Number.NEGATIVE_INFINITY;
     for (const r of records) {
       const yr = r.archive_year || (r.date ? parseInt(r.date.slice(0, 4)) : null);
-      if (yr && yr > latestYear) {
-        latestYear = yr;
+      if (Number.isFinite(yr) && (yr as number) > latestYear) {
+        latestYear = Number(yr);
       }
     }
+    if (!Number.isFinite(latestYear)) return [...records];
 
     const getDeterministicRandom = (issue: number) => {
       const x = Math.sin(issue) * 10000;
@@ -81,7 +83,7 @@ export class ZodiacPatternAnalyzer {
         // Older than X years: dynamically weaken (decay keep probability)
         const yearsOver = yearsDiff - freshnessYears;
         const keepProb = Math.max(0.15, Math.pow(0.5, yearsOver + 1));
-        if (getDeterministicRandom(record.issue) < keepProb) {
+        if (getDeterministicRandom(getPeriodId(record)) < keepProb) {
           resampled.push(record);
         }
       }
@@ -218,12 +220,14 @@ export class ZodiacPatternAnalyzer {
           if (this._validateDrawNumbers(nums)) {
             const issueKey = this._safeIssueKey(item);
             if (issueKey === null) continue;
-            fileRecords.push({
+            const record: LotteryRecord = {
               issue: issueKey,
               date: item.preDrawDate || "",
               numbers: nums,
               archive_year: fileYear,
-            });
+            };
+            record.periodId = getPeriodId(record);
+            fileRecords.push(record);
           }
         }
         fileRecords.sort((a, b) => a.issue - b.issue);
@@ -1891,6 +1895,44 @@ export class ZodiacPatternAnalyzer {
     const currentDiversity = diversityHistory[diversityHistory.length - 1] || 6;
     const currentSignature = latestSig;
 
+    // Prefix-only statistics for honest historical evaluation. A prediction made
+    // at index i may use states through i and transitions whose destination is
+    // at most i, but never the i -> i+1 outcome being evaluated.
+    const diversityPrefix: Record<number, number[]> = {};
+    const transitionPrefix: Record<number, Record<number, number[]>> = {};
+    for (const d of [4, 5, 6, 7]) {
+      diversityPrefix[d] = new Array(totalPeriods + 1).fill(0);
+      transitionPrefix[d] = {};
+      for (const nextD of [4, 5, 6, 7]) {
+        transitionPrefix[d][nextD] = new Array(totalPeriods + 1).fill(0);
+      }
+    }
+
+    const signatureHistory = zodiacMatrix.map(row => getMultiplicitySignature(row).signature);
+    const signatureTransitionPrefix = new Map<string, Record<number, number[]>>();
+    for (const signature of new Set(signatureHistory)) {
+      const counts: Record<number, number[]> = {};
+      for (const d of [4, 5, 6, 7]) counts[d] = new Array(totalPeriods + 1).fill(0);
+      signatureTransitionPrefix.set(signature, counts);
+    }
+
+    for (let i = 0; i < totalPeriods; i++) {
+      for (const d of [4, 5, 6, 7]) {
+        diversityPrefix[d][i + 1] = diversityPrefix[d][i] + (diversityHistory[i] === d ? 1 : 0);
+        for (const nextD of [4, 5, 6, 7]) {
+          const observed = i > 0 && diversityHistory[i - 1] === d && diversityHistory[i] === nextD ? 1 : 0;
+          transitionPrefix[d][nextD][i + 1] = transitionPrefix[d][nextD][i] + observed;
+        }
+      }
+
+      for (const [signature, counts] of signatureTransitionPrefix.entries()) {
+        for (const nextD of [4, 5, 6, 7]) {
+          const observed = i > 0 && signatureHistory[i - 1] === signature && diversityHistory[i] === nextD ? 1 : 0;
+          counts[nextD][i + 1] = counts[nextD][i] + observed;
+        }
+      }
+    }
+
     // Recent average
     const recentCount = Math.min(10, diversityHistory.length);
     const recentDiversities = diversityHistory.slice(-recentCount);
@@ -1923,21 +1965,33 @@ export class ZodiacPatternAnalyzer {
         else if (sigCurr === "aaa, aa") sigCurr = "aaa, bb";
       }
 
-      // Model 1: Markov Prior
-      const markovPrior = { ...globalDistribution };
+      const cutoff = idx + 1;
+      const localGlobalDistribution: Record<number, number> = {};
+      const localTotal = [4, 5, 6, 7].reduce((sum, d) => sum + diversityPrefix[d][cutoff], 0) || 1;
+      let localGlobalAverage = 0;
+      for (const d of [4, 5, 6, 7]) {
+        localGlobalDistribution[d] = diversityPrefix[d][cutoff] / localTotal;
+        localGlobalAverage += d * localGlobalDistribution[d];
+      }
+
+      // Model 1: Markov prior fitted only on transitions already observable at idx.
+      const markovPrior = { ...localGlobalDistribution };
       if (dCurr >= 4 && dCurr <= 7) {
-        const row = transitionMatrix[dCurr];
-        if (row) {
-          for (const k of [4, 5, 6, 7]) markovPrior[k] = row[k];
+        const rowTotal = [4, 5, 6, 7].reduce((sum, k) => sum + transitionPrefix[dCurr][k][cutoff], 0);
+        if (rowTotal > 0) {
+          for (const k of [4, 5, 6, 7]) markovPrior[k] = transitionPrefix[dCurr][k][cutoff] / rowTotal;
         }
       }
 
-      // Model 2: Signature Conditioned Prior
-      const sigPrior = { ...globalDistribution };
-      const matchedRule = zodiacMultiplicityRules.find(r => r.signature === sigCurr);
-      if (matchedRule && matchedRule.totalCount >= 3) {
+      // Model 2: signature-conditioned prior, also prefix-only.
+      const sigPrior = { ...localGlobalDistribution };
+      const sigCounts = signatureTransitionPrefix.get(sigCurr);
+      const sigTotal = sigCounts
+        ? [4, 5, 6, 7].reduce((sum, k) => sum + sigCounts[k][cutoff], 0)
+        : 0;
+      if (sigCounts && sigTotal >= 3) {
         for (const k of [4, 5, 6, 7]) {
-          sigPrior[k] = matchedRule.nextDiversityDistribution[k] || 0;
+          sigPrior[k] = sigCounts[k][cutoff] / sigTotal;
         }
       }
 
@@ -1946,9 +2000,9 @@ export class ZodiacPatternAnalyzer {
       const lookBack = Math.min(5, idx + 1);
       const subHistory = diversityHistory.slice(idx + 1 - lookBack, idx + 1);
       const subAvg = subHistory.reduce((a, b) => a + b, 0) / lookBack;
-      const deviation = subAvg - globalAverage; // positive means recent is higher than usual
+      const deviation = subAvg - localGlobalAverage; // positive means recent is higher than usual
 
-      const meanReversionPrior = { ...globalDistribution };
+      const meanReversionPrior = { ...localGlobalDistribution };
       const mrBias: Record<number, number> = { 4: 1, 5: 1, 6: 1, 7: 1 };
       if (deviation > 0.1) {
         mrBias[4] = 1.3;
@@ -1965,10 +2019,10 @@ export class ZodiacPatternAnalyzer {
       const rawMR: Record<number, number> = {};
       let mrSum = 0;
       for (const k of [4, 5, 6, 7]) {
-        rawMR[k] = globalDistribution[k] * mrBias[k];
+        rawMR[k] = localGlobalDistribution[k] * mrBias[k];
         mrSum += rawMR[k];
       }
-      for (const k of [4, 5, 6, 7]) meanReversionPrior[k] = mrSum > 0 ? rawMR[k] / mrSum : globalDistribution[k];
+      for (const k of [4, 5, 6, 7]) meanReversionPrior[k] = mrSum > 0 ? rawMR[k] / mrSum : localGlobalDistribution[k];
 
       // Combine weights
       // w1 = 0.45, w2 = 0.45, w3 = 0.10
@@ -1981,7 +2035,7 @@ export class ZodiacPatternAnalyzer {
 
       // Normalize
       for (const k of [4, 5, 6, 7]) {
-        ensembleProbabilities[k] = sumProb > 0 ? ensembleProbabilities[k] / sumProb : globalDistribution[k];
+        ensembleProbabilities[k] = sumProb > 0 ? ensembleProbabilities[k] / sumProb : localGlobalDistribution[k];
       }
 
       // Find winner
@@ -2150,7 +2204,14 @@ export class ZodiacPatternAnalyzer {
     items: string[];
     count: number;
     support: number;
-    rules: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+    rules: Array<{
+      lhs: string[];
+      rhs: string;
+      confidence: number;
+      lift?: number;
+      sampleCount?: number;
+      confidenceLowerBound?: number;
+    }>;
   }> {
     const N = zodiacMatrix.length;
     if (N === 0) return [];
@@ -2158,13 +2219,19 @@ export class ZodiacPatternAnalyzer {
     const zodiacs = ["马", "蛇", "龙", "兔", "虎", "牛", "鼠", "猪", "狗", "鸡", "猴", "羊"];
     
     const itemCounts: Record<string, number> = {};
+    const nextItemCounts: Record<string, number> = {};
     for (const z of zodiacs) itemCounts[z] = 0;
+    for (const z of zodiacs) nextItemCounts[z] = 0;
     for (const row of zodiacMatrix) {
       if (!row) continue;
       const rowSet = new Set(row);
       for (const z of zodiacs) {
         if (rowSet.has(z)) itemCounts[z]++;
       }
+    }
+    for (let i = 1; i < zodiacMatrix.length; i++) {
+      const nextSet = new Set(zodiacMatrix[i] || []);
+      for (const z of zodiacs) if (nextSet.has(z)) nextItemCounts[z]++;
     }
 
     const frequent1: string[] = zodiacs.filter(z => (itemCounts[z] / N) >= minSupport);
@@ -2246,7 +2313,14 @@ export class ZodiacPatternAnalyzer {
       items: string[];
       count: number;
       support: number;
-      rules: Array<{ lhs: string[]; rhs: string; confidence: number }>;
+      rules: Array<{
+        lhs: string[];
+        rhs: string;
+        confidence: number;
+        lift?: number;
+        sampleCount?: number;
+        confidenceLowerBound?: number;
+      }>;
     }> = [];
 
     for (const itemset of allFrequent) {
@@ -2254,20 +2328,49 @@ export class ZodiacPatternAnalyzer {
       const itemsetCount = itemsetCounts[itemsetKey] || getCount(itemset);
       const support = itemsetCount / N;
 
-      const rules: Array<{ lhs: string[]; rhs: string; confidence: number; lift: number }> = [];
-      if (itemset.length >= 3) {
-        for (let i = 0; i < itemset.length; i++) {
-          const rhs = itemset[i];
-          const lhs = itemset.filter((_, idx) => idx !== i);
-          const lhsKey = lhs.join(",");
-          const lhsCount = itemsetCounts[lhsKey] || getCount(lhs);
-          const rhsCount = itemCounts[rhs] || getCount([rhs]);
-          if (lhsCount > 0 && rhsCount > 0) {
-            const conf = itemsetCount / lhsCount;
-            const lift = (itemsetCount * N) / (lhsCount * rhsCount);
-            if (conf >= minConfidence && lift >= 1.25) {
-              rules.push({ lhs, rhs, confidence: conf, lift });
-            }
+      const rules: Array<{
+        lhs: string[];
+        rhs: string;
+        confidence: number;
+        lift: number;
+        sampleCount: number;
+        confidenceLowerBound: number;
+      }> = [];
+      let temporalTriggerCount = 0;
+      const temporalHits: Record<string, number> = {};
+      for (const z of zodiacs) temporalHits[z] = 0;
+
+      for (let t = 0; t < N - 1; t++) {
+        const currentSet = new Set(zodiacMatrix[t] || []);
+        if (!itemset.every(item => currentSet.has(item))) continue;
+        temporalTriggerCount++;
+        const nextSet = new Set(zodiacMatrix[t + 1] || []);
+        for (const rhs of zodiacs) if (nextSet.has(rhs)) temporalHits[rhs]++;
+      }
+
+      const minimumTemporalSamples = Math.max(8, Math.ceil(N * minSupport));
+      if (temporalTriggerCount >= minimumTemporalSamples && N > 1) {
+        for (const rhs of zodiacs) {
+          const confidence = temporalHits[rhs] / temporalTriggerCount;
+          const baseRate = nextItemCounts[rhs] / (N - 1);
+          const lift = baseRate > 0 ? confidence / baseRate : 0;
+          const z95 = 1.96;
+          const denominator = 1 + (z95 * z95) / temporalTriggerCount;
+          const center = (confidence + (z95 * z95) / (2 * temporalTriggerCount)) / denominator;
+          const margin = (z95 / denominator) * Math.sqrt(
+            (confidence * (1 - confidence) / temporalTriggerCount) +
+            (z95 * z95) / (4 * temporalTriggerCount * temporalTriggerCount)
+          );
+          const confidenceLowerBound = Math.max(0, center - margin);
+          if (confidence >= minConfidence && lift >= 1.25 && confidenceLowerBound > baseRate) {
+            rules.push({
+              lhs: [...itemset],
+              rhs,
+              confidence,
+              lift,
+              sampleCount: temporalTriggerCount,
+              confidenceLowerBound
+            });
           }
         }
       }
